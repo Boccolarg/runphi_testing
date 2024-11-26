@@ -1,0 +1,9 @@
+FROM arm64v8/ubuntu:22.04
+
+RUN apt-get update && apt-get install -y \
+    libstdc++6 \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY benchmark-name /usr/local/bin/benchmark-name
+
+CMD ["/usr/local/bin/benchmark-name"]
