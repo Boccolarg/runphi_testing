@@ -179,7 +179,7 @@ void _Pragma( "entrypoint" ) rijndael_dec_main( void )
   rijndael_dec_decfile( &rijndael_dec_fin, ctx );
 }
 
-int main()
+void rijndael_dec_entry()
 {
 
   rijndael_dec_init();

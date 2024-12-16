@@ -222,7 +222,7 @@ void _Pragma( "entrypoint" ) rijndael_enc_main( void )
   rijndael_enc_encfile( &rijndael_enc_fin, ctx );
 }
 
-int main( void )
+void rijndael_enc_entry( void )
 {
   rijndael_enc_init();
   rijndael_enc_main();

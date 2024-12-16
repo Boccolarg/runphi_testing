@@ -57,7 +57,7 @@ int adpcm_enc_abs( int n );
 void adpcm_enc_init( void );
 void adpcm_enc_main( void );
 int adpcm_enc_return( void );
-int main( void );
+void adpcm_enc_entry( void );
 
 /*
   Forward declaration of global variables
@@ -747,7 +747,7 @@ void _Pragma( "entrypoint" ) adpcm_enc_main( void )
 
 }
 
-int main( void )
+void adpcm_enc_entry( void )
 {
   adpcm_enc_init();
   adpcm_enc_main();

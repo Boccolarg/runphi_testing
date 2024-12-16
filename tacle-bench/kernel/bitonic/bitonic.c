@@ -27,7 +27,7 @@ int bitonic_return( void );
 void bitonic_compare( int i, int j, int dir );
 void bitonic_merge( int lo, int cnt, int dir );
 void bitonic_sort( int lo, int cnt, int dir );
-int main( void );
+void bitonic_entry( void );
 
 
 /*
@@ -148,7 +148,7 @@ void _Pragma ( "entrypoint" ) bitonic_main( void )
 }
 
 
-int main( void )
+void bitonic_entry( void )
 {
   bitonic_init();
   bitonic_main();

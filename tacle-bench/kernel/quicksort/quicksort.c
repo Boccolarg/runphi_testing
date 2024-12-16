@@ -40,7 +40,7 @@ int quicksort_return( void );
 void quicksort_str( char *, unsigned long, unsigned long );
 void quicksort_vec( char *, unsigned long, unsigned long );
 void quicksort_main( void );
-int main( void );
+void quicksort_entry( void );
 
 
 /*
@@ -236,7 +236,7 @@ void _Pragma ( "entrypoint" ) quicksort_main( void )
 }
 
 
-int main( void )
+void quicksort_entry( void )
 {
   quicksort_init();
   quicksort_main();

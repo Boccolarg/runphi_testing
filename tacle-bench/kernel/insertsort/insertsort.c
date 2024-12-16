@@ -35,7 +35,7 @@ void insertsort_initialize( unsigned int *array );
 void insertsort_init( void );
 int insertsort_return( void );
 void insertsort_main( void );
-int main( void );
+void insertsort_entry( void );
 
 /*
   Declaration of global variables
@@ -130,7 +130,7 @@ void _Pragma( "entrypoint" ) insertsort_main()
     insertsort_max_i = insertsort_iters_i;
 }
 
-int main( void )
+void insertsort_entry( void )
 {
   insertsort_init();
   insertsort_main();

@@ -28,7 +28,7 @@ void duff_initialize( char *arr, int length );
 void duff_init();
 void duff_main( void );
 int duff_return( void );
-int main( void );
+void duff_entry( void );
 
 
 /*
@@ -123,7 +123,7 @@ void _Pragma( "entrypoint" ) duff_main( void )
 }
 
 
-int main( void )
+void duff_entry( void )
 {
   duff_init();
   duff_main();

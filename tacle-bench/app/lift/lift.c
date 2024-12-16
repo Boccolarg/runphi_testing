@@ -123,7 +123,7 @@ void  _Pragma( "entrypoint" ) lift_main()
 }
 
 
-int main( void )
+void lift_entry( void )
 {
   lift_init();
   lift_main();

@@ -47,7 +47,7 @@ void powerwindow_Uint8inputarray_initialize( powerwindow_uint8_T *,
 void powerwindow_init();
 void powerwindow_main();
 int powerwindow_return();
-int main( void );
+void powerwindow_entry( void );
 
 
 
@@ -729,7 +729,7 @@ int powerwindow_return( void )
 }
 
 
-int main( void )
+void powerwindow_entry( void )
 {
   powerwindow_init();
   powerwindow_main();

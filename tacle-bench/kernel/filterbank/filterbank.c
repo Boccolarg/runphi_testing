@@ -161,7 +161,7 @@ void filterbank_core( float r[ 256 ],
   Main function
 */
 
-int main( void )
+void filterbank_entry( void )
 {
   filterbank_init();
   filterbank_main();

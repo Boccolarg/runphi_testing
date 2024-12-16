@@ -32,7 +32,7 @@ int recursion_fib( int i );
 void recursion_main( void );
 void recursion_init( void );
 int recursion_return( void );
-int main ( void );
+void recursion_entry( void );
 
 
 void recursion_init()
@@ -64,7 +64,7 @@ void _Pragma( "entrypoint" ) recursion_main( void )
   recursion_result = recursion_fib( recursion_input );
 }
 
-int main( void )
+void recursion_entry( void )
 {
   recursion_init();
   recursion_main();

@@ -106,7 +106,7 @@ int g723_enc_pack_output(
 void g723_enc_init();
 int g723_enc_return();
 void g723_enc_main();
-int main( void );
+void g723_enc_entry( void );
 
 /*
   Declaration of global variables
@@ -868,7 +868,7 @@ void _Pragma( "entrypoint" ) g723_enc_main()
 }
 
 
-int main( void )
+void g723_enc_entry( void )
 {
   g723_enc_init();
   g723_enc_main();

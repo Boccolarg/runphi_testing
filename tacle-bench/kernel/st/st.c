@@ -38,7 +38,7 @@ void st_calc_Sum_Mean( float *, float *, float * );
 void st_calc_Var_Stddev( float *, float, float *, float * );
 void st_calc_LinCorrCoef( float *, float *, float, float, float * );
 void st_main( void );
-int main( void );
+void st_entry( void );
 
 
 /*
@@ -217,7 +217,7 @@ void _Pragma( "entrypoint" ) st_main( void )
 }
 
 
-int main( void )
+void st_entry( void )
 {
   st_init();
   st_main();

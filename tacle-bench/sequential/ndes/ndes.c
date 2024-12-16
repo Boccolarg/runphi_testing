@@ -55,7 +55,7 @@ void ndes_ks( /*immense key, */int n, ndes_great *kn );
 void ndes_init( void );
 int ndes_return( void );
 void ndes_main( void );
-int main( void );
+void ndes_entry( void );
 
 /*
    Initialization
@@ -381,7 +381,7 @@ void _Pragma( "entrypoint" ) ndes_main()
 
 /* main function */
 
-int main( void )
+void ndes_entry( void )
 {
   ndes_init();
   ndes_main();

@@ -110,7 +110,7 @@ void gsm_dec_Coefficients_27_39( word *LARpp_j_1, word *LARpp_j, word *LARp );
 gsm gsm_dec_create( void );
 void gsm_dec_init( void );
 void gsm_dec_main( void );
-int main( void );
+void gsm_dec_entry( void );
 
 /* add.c */
 
@@ -748,7 +748,7 @@ void _Pragma( "entrypoint" ) gsm_dec_main( void )
   }
 }
 
-int main( void )
+void gsm_dec_entry( void )
 {
   gsm_dec_init();
   gsm_dec_main();

@@ -39,7 +39,7 @@ void countnegative_init( void );
 int countnegative_return( void );
 void countnegative_sum( matrix );
 void countnegative_main( void );
-int main( void );
+void countnegative_entry( void );
 
 /*
   Globals
@@ -131,7 +131,7 @@ void _Pragma( "entrypoint" ) countnegative_main ( void )
   countnegative_sum(  countnegative_array );
 }
 
-int main( void )
+void countnegative_entry( void )
 {
   countnegative_init();
   countnegative_main();

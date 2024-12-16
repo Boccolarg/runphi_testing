@@ -590,7 +590,7 @@ void epic_internal_filter( float *image, int x_dim, int y_dim, float *filt,
 void epic_reflect1( float *filt, int x_dim, int y_dim, int x_pos, int y_pos,
                     float *result, int f_or_e );
 void epic_main( void );
-int main( void );
+void epic_entry( void );
 
 
 /*
@@ -1127,7 +1127,7 @@ int epic_return()
   return ( checksum == 43968 ? 0 : 1 );
 }
 
-int main( void )
+void epic_entry( void )
 {
   epic_init();
   epic_main();

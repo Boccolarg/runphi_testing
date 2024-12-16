@@ -194,7 +194,7 @@ int lms_return( void )
 }
 
 
-int main()
+void lms_entry()
 {
   lms_init();
   lms_main();

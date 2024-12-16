@@ -69,7 +69,7 @@ void isqrt_usqrt( unsigned long x, struct int_sqrt *q );
 void isqrt_init( void );
 void isqrt_main( void );
 int isqrt_return( void );
-int main( void );
+void isqrt_entry( void );
 
 
 /*
@@ -147,7 +147,7 @@ void _Pragma( "entrypoint" ) isqrt_main( void )
 }
 
 
-int main( void )
+void isqrt_entry( void )
 {
   isqrt_init();
   isqrt_main();

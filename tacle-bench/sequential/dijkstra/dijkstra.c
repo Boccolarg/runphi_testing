@@ -63,7 +63,7 @@ void dijkstra_dequeue( int *node, int *dist, int *prev );
 int dijkstra_qcount( void );
 int dijkstra_find( int chStart, int chEnd );
 void dijkstra_main( void );
-int main( void );
+void dijkstra_entry( void );
 
 void dijkstra_init( void )
 {
@@ -186,7 +186,7 @@ void _Pragma( "entrypoint" ) dijkstra_main( void )
   }
 }
 
-int main( void )
+void dijkstra_entry( void )
 {
   dijkstra_init();
   dijkstra_main();

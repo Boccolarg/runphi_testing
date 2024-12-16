@@ -41,7 +41,7 @@ void binarysearch_init( void );
 int binarysearch_return( void );
 int binarysearch_binary_search( int );
 void binarysearch_main( void );
-int main( void );
+void binarysearch_entry( void );
 
 
 /*
@@ -147,7 +147,7 @@ void _Pragma( "entrypoint" ) binarysearch_main( void )
 }
 
 
-int main( void )
+void binarysearch_entry( void )
 {
   binarysearch_init();
   binarysearch_main();

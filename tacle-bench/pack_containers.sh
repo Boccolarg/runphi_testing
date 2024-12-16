@@ -26,7 +26,9 @@ RUN apt-get update && apt-get install -y \\
     libstdc++6 \\
     && rm -rf /var/lib/apt/lists/*
 
+WORKDIR /home
 COPY $benchmark_name /usr/local/bin/$benchmark_name
+RUN chmod +x /usr/local/bin/$benchmark_name
 
 CMD ["/usr/local/bin/$benchmark_name"]
 EOL

@@ -36,7 +36,7 @@ void h264_dec_init ();
 int h264_dec_return ();
 void h264_dec_decode_one_macroblock( struct h264_dec_img_par *img );
 void h264_dec_main( void );
-int main( void );
+void h264_dec_entry( void );
 
 
 /*
@@ -594,7 +594,7 @@ void _Pragma( "entrypoint" )  h264_dec_main( void )
 }
 
 
-int main( void )
+void h264_dec_entry( void )
 {
   h264_dec_init();
   h264_dec_main();

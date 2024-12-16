@@ -693,7 +693,7 @@ void _Pragma( "entrypoint" ) cover_main( void )
   Main function
 */
 
-int main( void )
+void cover_entry( void )
 {
   cover_init();
   cover_main();

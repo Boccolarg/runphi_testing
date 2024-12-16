@@ -2,7 +2,8 @@
 
 # Step 1: Compile the benchmarks
 echo "Step 1: Compiling benchmarks..."
-if ./compile_benchmarks.sh; then
+#if ./compile_benchmarks.sh; then
+if ./compile_benchmark_wrap.sh; then
     echo "Benchmarks compiled successfully."
 else
     echo "Error during benchmark compilation. Exiting..."

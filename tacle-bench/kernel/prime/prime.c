@@ -32,7 +32,7 @@ void prime_initSeed();
 void prime_init ();
 int prime_return ();
 void prime_main ();
-int main( void );
+void prime_entry( void );
 
 
 /*
@@ -128,7 +128,7 @@ void _Pragma( "entrypoint" ) prime_main()
 }
 
 
-int main( void )
+void prime_entry( void )
 {
   prime_init();
   prime_main();

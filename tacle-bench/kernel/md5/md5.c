@@ -201,7 +201,7 @@ void md5_init( void );
 int md5_return( void );
 int md5_bytesNeeded;
 
-int main( void );
+void md5_entry( void );
 
 unsigned char md5_PADDING[ 64 ] = {
   0x80, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
@@ -622,7 +622,7 @@ void _Pragma( "entrypoint" ) md5_main( void )
   md5_bytesNeeded = randomStruct.bytesNeeded + randomStruct2.bytesNeeded;
 }
 
-int main( void )
+void md5_entry( void )
 {
   md5_init();
   md5_main();

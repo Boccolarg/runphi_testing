@@ -77,7 +77,7 @@ void huff_dec_read_header( t_bin_val codes_table[ 257 ] );
 huff_dec_t_tree *huff_dec_tree_encoding( t_bin_val codes_table[ 257 ],
     huff_dec_t_tree heap[ 514 ] );
 void huff_dec_main( void );
-int main( void );
+void huff_dec_entry( void );
 
 
 /*
@@ -374,7 +374,7 @@ void _Pragma( "entrypoint" ) huff_dec_main( void )
 }
 
 
-int main( void )
+void huff_dec_entry( void )
 {
   huff_dec_init();
   huff_dec_main();

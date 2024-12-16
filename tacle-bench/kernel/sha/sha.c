@@ -215,7 +215,7 @@ int sha_return( void )
   return ( sum - 261944 != 0 );
 }
 
-int main ( void )
+void sha_entry( void )
 {
   sha_init();
   sha_main();

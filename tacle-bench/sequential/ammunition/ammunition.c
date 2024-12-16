@@ -42,7 +42,7 @@ int ammunition_arithm_test();
 void ammunition_init( void );
 int ammunition_return( void );
 void ammunition_main( void );
-int main( void );
+void ammunition_entry( void );
 
 
 /*
@@ -1170,7 +1170,7 @@ void _Pragma( "entrypoint" ) ammunition_main( void )
 }
 
 
-int main( void )
+void ammunition_entry( void )
 {
   ammunition_init();
   ammunition_main();

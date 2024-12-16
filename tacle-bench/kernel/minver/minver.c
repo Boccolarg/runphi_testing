@@ -36,7 +36,7 @@ double minver_fabs( double n );
 void minver_init();
 int minver_return();
 void minver_main();
-int main( void );
+void minver_entry( void );
 
 /*
     Declaration of global variables
@@ -247,7 +247,7 @@ void _Pragma( "entrypoint" ) minver_main()
 }
 
 
-int main( void )
+void minver_entry( void )
 {
   minver_init();
   minver_main();
