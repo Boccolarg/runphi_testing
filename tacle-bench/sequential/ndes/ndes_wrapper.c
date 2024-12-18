@@ -22,8 +22,8 @@ int main() {
     elapsed = (end.tv_sec - start.tv_sec) + 
               (end.tv_nsec - start.tv_nsec) / 1e9;
 
-    // Write elapsed time to a file
-    FILE *file = fopen("/home/execution_time.txt", "w");
+    // Write elapsed time to a file (Append Mode)
+    FILE *file = fopen("/home/execution_time.txt", "a");
     if (file != NULL) {
         fprintf(file, "%.6f\n", elapsed);
         fclose(file);
