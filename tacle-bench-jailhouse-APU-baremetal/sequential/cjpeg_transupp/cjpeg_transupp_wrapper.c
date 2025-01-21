@@ -11,10 +11,15 @@ volatile uint32_t *destination = (volatile uint32_t *)DST_ADDRESS;
 int cjpeg_transupp_entry(void);
 
 int main(void) {
-    uint32_t start_time, end_time;
+    uint32_t start_time = 0, end_time = 0;
+    uint32_t timeout;
 
     // Save start time from the timer memory area
     start_time = *source;
+    if (start_time == 0) {
+        *destination = 0xDEAD0000;  // Error code for invalid timer start
+        return -1;
+    }
     *destination = start_time;
 
     // Run the benchmark
@@ -22,11 +27,19 @@ int main(void) {
 
     // Save end time from the timer memory area
     end_time = *source;
+    if (end_time == 0) {
+        *destination = 0xDEAD0001;  // Error code for invalid timer end
+        return -1;
+    }
 
     // Wait for synchronization with the root cell script
-    while (*destination != 0xBEEFDEAD) {
-        // Add a no-operation instruction to prevent optimizations
+    timeout = 0xFFFFFF;
+    while (*destination != 0xBEEFDEAD && timeout--) {
         __asm__ volatile ("nop");
+    }
+    if (timeout == 0) {
+        *destination = 0xDEAD0002;  // Error code for timeout
+        return -1;
     }
 
     // Write the end time to the shared memory
