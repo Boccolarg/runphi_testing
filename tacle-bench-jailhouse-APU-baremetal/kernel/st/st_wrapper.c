@@ -1,5 +1,6 @@
 #include <stdint.h>
 #include <stddef.h>
+#include <inmate.h>
 
 #define SRC_ADDRESS  0xFF250000  // Memory-mapped source address
 #define DST_ADDRESS  0x46D00000  // Memory-mapped destination address
@@ -10,7 +11,8 @@ volatile uint32_t *destination = (volatile uint32_t *)DST_ADDRESS;
 // Declaration of the benchmark function
 int st_entry(void);
 
-int main(void) {
+int inmate_main(void) {
+
     uint32_t start_time = 0, end_time = 0;
     uint32_t timeout;
 

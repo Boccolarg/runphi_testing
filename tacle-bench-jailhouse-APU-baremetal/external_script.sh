@@ -9,6 +9,7 @@ BAREMETAL_INMATE_CELL="zynqmp-kv260-APU-inmate-demo-omnv.cell"
 BIN_FILE_DIR="/root/tacle-bench-binaries/"
 CELL_NAME="inmate-demo-APU"
 RESULTS_DIR="/root/tacle-bench-results-jailhouse-APU"
+TIMEOUT_SECONDS=5
 
 # Ensure the results directory exists
 mkdir -p "$RESULTS_DIR"
@@ -71,9 +72,10 @@ for BIN_FILE in $BENCHMARKS; do
             continue
         fi
 
-        # Monitor the memory address for changes
+        # Monitor the memory address for changes (Start value)
         CURRENT_VALUE=$INITIAL_VALUE
         echo "Monitoring memory to extract start value..."
+        SECONDS=0
         while :
         do
             START_VALUE=$(devmem $ADDRESS 32 2>/dev/null | grep -oE '0x[0-9A-Fa-f]+$')
@@ -89,11 +91,19 @@ for BIN_FILE in $BENCHMARKS; do
                 echo "Value changed! Start value: $START_VALUE"
                 break
             fi
+            if (( SECONDS >= TIMEOUT_SECONDS )); then
+                echo "Error: Timeout while waiting for start value." >&2
+                jailhouse cell destroy $CELL_NAME
+                exit 1
+            fi
             sleep 1
             echo -n "."
         done
+
+        # Monitor the memory address for changes (End value)
         CURRENT_VALUE=$INTERMEDIATE_VALUE
         echo "Monitoring memory to extract end value..."
+        SECONDS=0
         while :
         do
             END_VALUE=$(devmem $ADDRESS 32 2>/dev/null | grep -oE '0x[0-9A-Fa-f]+$')
@@ -104,6 +114,11 @@ for BIN_FILE in $BENCHMARKS; do
             if [ "$END_VALUE" != "$CURRENT_VALUE" ]; then
                 echo "Value changed! End value: $END_VALUE"
                 break
+            fi
+            if (( SECONDS >= TIMEOUT_SECONDS )); then
+                echo "Error: Timeout while waiting for end value." >&2
+                jailhouse cell destroy $CELL_NAME
+                exit 1
             fi
             sleep 1
             echo -n "."

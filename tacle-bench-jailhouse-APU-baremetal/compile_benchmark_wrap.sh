@@ -37,6 +37,7 @@ create_wrapper() {
     cat << EOF > "$wrapper_file"
 #include <stdint.h>
 #include <stddef.h>
+#include <inmate.h>
 
 #define SRC_ADDRESS  0xFF250000  // Memory-mapped source address
 #define DST_ADDRESS  0x46D00000  // Memory-mapped destination address
@@ -47,7 +48,8 @@ volatile uint32_t *destination = (volatile uint32_t *)DST_ADDRESS;
 // Declaration of the benchmark function
 int ${benchmark_name}_entry(void);
 
-int main(void) {
+int inmate_main(void) {
+
     uint32_t start_time = 0, end_time = 0;
     uint32_t timeout;
 
@@ -108,10 +110,13 @@ while IFS= read -r line; do
         benchmark_name=$line
         benchmark_dir="./$current_directory/$benchmark_name"
         
-        # Find all .c files in the benchmark's directory
-        c_files=$(find "$benchmark_dir" -maxdepth 1 -type f -name "*.c" 2>/dev/null | tr '\n' ' ')
+        # Find all .c files in the benchmark's directory (excluding the wrapper)
+        benchmark_files=$(find "$benchmark_dir" -maxdepth 1 -type f -name "*.c" ! -name "*_wrapper.c" 2>/dev/null | tr '\n' ' ')
 
-        if [[ -z $c_files ]]; then
+        # Add the wrapper file explicitly at the beginning
+        wrapper_file="$benchmark_dir/${benchmark_name}_wrapper.c"
+
+        if [[ -z $benchmark_files ]]; then
             echo "No source files found for $benchmark_name" >> $error_log
             failures+=("$benchmark_name")
             total_count=$((total_count + 1))
@@ -119,8 +124,8 @@ while IFS= read -r line; do
         fi
 
         # Rename only the function definition in benchmark files
-        for c_file in $c_files; do
-            sed -i "s/^void[[:space:]]\+${benchmark_name}_entry[[:space:]]*(/int ${benchmark_name}_entry(/" "$c_file"
+        for benchmark_file in $benchmark_files; do
+            sed -i "s/^void[[:space:]]\+${benchmark_name}_entry[[:space:]]*(/int ${benchmark_name}_entry(/" "$benchmark_file"
         done
 
         # Create C wrapper file
@@ -128,7 +133,14 @@ while IFS= read -r line; do
 
         # Compile the benchmark with the wrapper
         echo "Compiling $benchmark_name with wrapper..."
-        aarch64-none-elf-gcc -O2 -nostdlib -nodefaultlibs -ffreestanding -o "$elf_dir/$benchmark_name.elf" $c_files 2>> $error_log
+        # aarch64-none-elf-gcc -O2 -nostdlib -nodefaultlibs -ffreestanding \
+        #     -o "$elf_dir/$benchmark_name.elf" "$wrapper_file" $benchmark_files 2>> $error_log
+        aarch64-none-elf-gcc -O0 -nostdlib -nodefaultlibs -ffreestanding \
+            -g3 -v \
+            -I./ \
+            -T lscript.ld \
+            -o "$elf_dir/$benchmark_name.elf" "$wrapper_file" $benchmark_files 2>> $error_log
+
         aarch64-none-elf-objcopy -O binary "$elf_dir/$benchmark_name.elf" "$bin_dir/$benchmark_name.bin" 2>> $error_log
 
         # Check if compilation was successful
