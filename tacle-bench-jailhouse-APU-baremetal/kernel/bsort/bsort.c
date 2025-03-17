@@ -123,7 +123,7 @@ void _Pragma( "entrypoint" ) bsort_main( void )
   Main function
 */
 
-int bsort_entry( void )
+int bsort_entry(void)
 {
   bsort_init();
   bsort_main();

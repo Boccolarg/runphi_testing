@@ -40,7 +40,7 @@ unsigned long bitcount_random( void );
 void bitcount_main();
 int bitcount_return();
 void bitcount_init();
-int bitcount_entry( void );
+int bitcount_entry(void);
 
 
 int bitcount_bit_shifter( long int x )
@@ -137,7 +137,7 @@ void _Pragma( "entrypoint" ) bitcount_main()
   _Pragma( "flowrestriction 1*btbl_bitcount <= 4*call_btbl" )
 }
 
-int bitcount_entry( void )
+int bitcount_entry(void)
 {
   bitcount_init();
   bitcount_main();

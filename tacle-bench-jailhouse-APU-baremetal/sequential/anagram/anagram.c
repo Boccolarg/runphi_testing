@@ -652,7 +652,7 @@ void _Pragma( "entrypoint" ) anagram_main( void )
   Main function
 */
 
-int anagram_entry( void )
+int anagram_entry(void)
 {
   anagram_init();
   anagram_main();

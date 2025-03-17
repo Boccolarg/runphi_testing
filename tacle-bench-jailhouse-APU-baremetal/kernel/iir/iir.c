@@ -55,7 +55,7 @@
 void iir_init( void );
 int iir_return( void );
 void iir_main( void );
-int iir_entry( void );
+int iir_entry(void);
 
 
 /*
@@ -154,7 +154,7 @@ void _Pragma( "entrypoint" ) iir_main( void )
 }
 
 
-int iir_entry( void )
+int iir_entry(void)
 {
   iir_init();
   iir_main();

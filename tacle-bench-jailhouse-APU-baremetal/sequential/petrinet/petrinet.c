@@ -41,7 +41,7 @@ int petrinet_main_iters_dummy_i = 0,
 void petrinet_init( void );
 int petrinet_return( void );
 void petrinet_main( void );
-int petrinet_entry( void );
+int petrinet_entry(void);
 
 
 volatile int  petrinet_P1_is_marked;
@@ -973,7 +973,7 @@ int petrinet_return( void )
 }
 
 
-int petrinet_entry( void )
+int petrinet_entry(void)
 {
   petrinet_main();
 

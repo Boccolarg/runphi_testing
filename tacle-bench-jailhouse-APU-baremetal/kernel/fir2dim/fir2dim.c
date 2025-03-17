@@ -32,7 +32,7 @@ void fir2dim_pin_down( float *pimage, float *parray, float *pcoeff,
 void fir2dim_init();
 int fir2dim_return();
 void fir2dim_main();
-int fir2dim_entry( void );
+int fir2dim_entry(void);
 
 
 /*
@@ -189,7 +189,7 @@ void _Pragma( "entrypoint" ) fir2dim_main()
 }
 
 
-int fir2dim_entry( void )
+int fir2dim_entry(void)
 {
   fir2dim_init();
   fir2dim_main();

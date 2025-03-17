@@ -29,7 +29,7 @@
 void cosf_init( void );
 void cosf_main( void );
 int cosf_return( void );
-int cosf_entry( void );
+int cosf_entry(void);
 
 
 /*
@@ -77,7 +77,7 @@ void _Pragma( "entrypoint" ) cosf_main( void )
 }
 
 
-int cosf_entry( void )
+int cosf_entry(void)
 {
   cosf_init();
   cosf_main();

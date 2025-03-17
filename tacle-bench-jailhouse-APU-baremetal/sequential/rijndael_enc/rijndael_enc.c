@@ -131,8 +131,7 @@ int rijndael_enc_return( void )
 void rijndael_enc_fillrand( unsigned char *buf, int len )
 {
   static unsigned long a[ 2 ], mt = 1, count = 4;
-  //static char          r[ 4 ];
-  static char          r[ 8 ];
+  static char          r[ 4 ];
   int                  i;
 
   if ( mt ) {
@@ -223,7 +222,7 @@ void _Pragma( "entrypoint" ) rijndael_enc_main( void )
   rijndael_enc_encfile( &rijndael_enc_fin, ctx );
 }
 
-int rijndael_enc_entry( void )
+int rijndael_enc_entry(void)
 {
   rijndael_enc_init();
   rijndael_enc_main();

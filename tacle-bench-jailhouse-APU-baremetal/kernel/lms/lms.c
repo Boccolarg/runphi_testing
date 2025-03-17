@@ -44,6 +44,7 @@
 #define L 20
 #define SAMPLING 5
 
+int lms_entry(void);
 
 float lms_input[ N + 1 ], lms_output[ N + 1 ];
 
@@ -194,7 +195,7 @@ int lms_return( void )
 }
 
 
-int lms_entry()
+int lms_entry(void)
 {
   lms_init();
   lms_main();

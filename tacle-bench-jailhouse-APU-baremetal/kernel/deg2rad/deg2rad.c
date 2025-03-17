@@ -32,7 +32,7 @@
 void deg2rad_init( void );
 void deg2rad_main( void );
 int deg2rad_return( void );
-int deg2rad_entry( void );
+int deg2rad_entry(void);
 
 
 /*
@@ -82,7 +82,7 @@ void _Pragma( "entrypoint" ) deg2rad_main( void )
 }
 
 
-int deg2rad_entry( void )
+int deg2rad_entry(void)
 {
   deg2rad_init();
   deg2rad_main();

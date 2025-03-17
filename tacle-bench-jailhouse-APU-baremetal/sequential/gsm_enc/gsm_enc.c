@@ -2216,7 +2216,7 @@ void _Pragma( "entrypoint" ) gsm_enc_main( void )
                     gsm_enc_gsmdata + i * sizeof( gsm_frame ) );
 }
 
-int gsm_enc_entry( void )
+int gsm_enc_entry(void)
 {
   gsm_enc_init();
   gsm_enc_main();

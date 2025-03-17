@@ -60,6 +60,7 @@ int rijndael_dec_return( void );
 void rijndael_dec_fillrand( unsigned char *buf, int len );
 void rijndael_dec_decfile( struct rijndael_dec_FILE *fin, struct aes *ctx );
 void rijndael_dec_main( void );
+int rijndael_dec_entry(void);
 
 void rijndael_dec_init( void )
 {
@@ -179,7 +180,7 @@ void _Pragma( "entrypoint" ) rijndael_dec_main( void )
   rijndael_dec_decfile( &rijndael_dec_fin, ctx );
 }
 
-int rijndael_dec_entry()
+int rijndael_dec_entry(void)
 {
 
   rijndael_dec_init();

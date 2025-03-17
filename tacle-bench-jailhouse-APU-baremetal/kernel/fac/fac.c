@@ -27,7 +27,7 @@ int fac_fac( int n );
 void fac_init();
 int fac_return();
 void fac_main();
-int fac_entry( void );
+int fac_entry(void);
 /*
   Declaration of global variables
 */
@@ -87,7 +87,7 @@ void _Pragma( "entrypoint" ) fac_main ()
 }
 
 
-int fac_entry( void )
+int fac_entry(void)
 {
   fac_init();
   fac_main();

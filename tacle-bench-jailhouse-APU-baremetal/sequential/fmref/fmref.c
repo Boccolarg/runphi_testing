@@ -72,7 +72,7 @@ int fmref_return( void )
   return 0;
 }
 
-int fmref_entry( void )
+int fmref_entry(void)
 {
   fmref_init();
   fmref_main();

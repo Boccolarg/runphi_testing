@@ -71,7 +71,7 @@ int cjpeg_wrbmp_putc_modified( int character );
 void cjpeg_wrbmp_init();
 void cjpeg_wrbmp_main();
 int cjpeg_wrbmp_return();
-int cjpeg_wrbmp_entry();
+int main();
 
 /*
    Initialization functions
@@ -207,7 +207,7 @@ int cjpeg_wrbmp_return()
   return ( cjpeg_wrbmp_checksum  + ( -209330 ) ) != 0;
 }
 
-int cjpeg_wrbmp_entry( void )
+int cjpeg_wrbmp_entry(void)
 {
   cjpeg_wrbmp_init();
   cjpeg_wrbmp_main();

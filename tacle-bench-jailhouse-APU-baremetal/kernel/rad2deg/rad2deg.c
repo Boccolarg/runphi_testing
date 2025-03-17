@@ -33,7 +33,7 @@
 void rad2deg_init( void );
 void rad2deg_main( void );
 int rad2deg_return( void );
-int rad2deg_entry( void );
+int rad2deg_entry(void);
 
 
 /*
@@ -81,7 +81,7 @@ void _Pragma ( "entrypoint" ) rad2deg_main( void )
 }
 
 
-int rad2deg_entry( void )
+int rad2deg_entry(void)
 {
   rad2deg_init();
   rad2deg_main();

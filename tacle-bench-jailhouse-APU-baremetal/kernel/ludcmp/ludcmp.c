@@ -35,7 +35,7 @@ void ludcmp_init( void );
 int ludcmp_return( void );
 int  ludcmp_test( int n, double eps );
 void ludcmp_main( void );
-int ludcmp_entry( void );
+int ludcmp_entry(void);
 
 double ludcmp_a[ 50 ][ 50 ], ludcmp_b[ 50 ], ludcmp_x[ 50 ];
 int ludcmp_chkerr;
@@ -168,7 +168,7 @@ void _Pragma( "entrypoint" ) ludcmp_main( void )
   ludcmp_chkerr = ludcmp_test( n, eps );
 }
 
-int ludcmp_entry( void )
+int ludcmp_entry(void)
 {
   ludcmp_init();
   ludcmp_main();

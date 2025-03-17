@@ -154,7 +154,7 @@ void test3_func_2_0( void );
 void test3_func_1_0( void );
 void test3_func_0_0( void );
 void test3_main( void );
-int test3_entry( void );
+int test3_entry(void);
 
 
 /*
@@ -5069,7 +5069,7 @@ void _Pragma ( "entrypoint" ) test3_main( void )
 }
 
 
-int test3_entry()
+int test3_entry(void)
 {
   test3_init();
   test3_main();

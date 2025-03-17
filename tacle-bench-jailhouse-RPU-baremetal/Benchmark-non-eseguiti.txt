@@ -1,0 +1,6 @@
+rijndael_dec.bin - never worked
+rijndael_enc.bin - never worked
+sha - muore nel benchmark, in un ciclo for in sha_fread() arriva a printk sha_fread2 ma non a sha_fread3
+filterbank - filterbank non parte mai il main
+huff_dec - muore dopo printk huff_dec_main1
+huf_enc - sync exception in huff_enc_build_tree_encoding

@@ -1269,7 +1269,7 @@ void _Pragma ( "entrypoint" ) statemate_main( void )
 }
 
 
-int statemate_entry( void )
+int statemate_entry(void)
 {
   statemate_init();
   statemate_main();

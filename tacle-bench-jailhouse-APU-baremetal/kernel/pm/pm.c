@@ -734,7 +734,7 @@ int pm_kernel( pm_data_t *pmdata )
   Main function
 */
 
-int pm_entry( void )
+int pm_entry(void)
 {
   pm_init();
   pm_main();

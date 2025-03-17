@@ -1,8 +1,9 @@
 #!/bin/bash
 
 # Directory to store the compiled executables
-elf_dir="executables/elf"
-bin_dir="executables/bin"
+#elf_dir="executables_shm/elf"
+#bin_dir="executables_shm/bin"
+output_dir="executables_shm/"
 
 # File containing the benchmark names and directory structure
 benchmark_file="benchmark_used.txt"
@@ -22,11 +23,12 @@ compilation_report="compilation_report.txt"
 > $compilation_report
 
 # Clear previous executables folder
-rm -rf executables/
+rm -rf $output_dir
 
 # Create the output directory if it doesn't exist
-mkdir -p $elf_dir
-mkdir -p $bin_dir
+#mkdir -p $elf_dir
+#mkdir -p $bin_dir
+mkdir -p $output_dir
 
 # Function to create a C wrapper
 create_wrapper() {
@@ -35,60 +37,42 @@ create_wrapper() {
     local wrapper_file="$benchmark_dir/${benchmark_name}_wrapper.c"
 
     cat << EOF > "$wrapper_file"
-#include <stdint.h>
-#include <stddef.h>
 #include <inmate.h>
 
-#define SRC_ADDRESS  0xFF250000  // Memory-mapped source address
-#define DST_ADDRESS  0x46D00000  // Memory-mapped destination address
+#define SYSTEM_COUNTER  0xFF250000  // Memory-mapped system_counter address
+#define SHARED_MEMORY  0x46D00000  // Memory-mapped shared_memory address
 
-volatile uint32_t *source = (volatile uint32_t *)SRC_ADDRESS;
-volatile uint32_t *destination = (volatile uint32_t *)DST_ADDRESS;
+volatile u32 *system_counter = (volatile u32 *)SYSTEM_COUNTER;
+volatile u32 *shared_memory = (volatile u32 *)SHARED_MEMORY;
 
 // Declaration of the benchmark function
 int ${benchmark_name}_entry(void);
 
-int inmate_main(void) {
-
-    uint32_t start_time = 0, end_time = 0;
-    uint32_t timeout;
-
+void inmate_main(void) {
+    //printk("Inmate main ${benchmark_name}\n");
+    map_range((void *)system_counter, 4, MAP_UNCACHED);
+	map_range((void *)shared_memory, 4, MAP_UNCACHED);    
+    u32 start_time = 0, end_time = 0;
     // Save start time from the timer memory area
-    start_time = *source;
-    if (start_time == 0) {
-        *destination = 0xDEAD0000;  // Error code for invalid timer start
-        return -1;
-    }
-    *destination = start_time;
-
+    start_time = *system_counter;
+    *shared_memory = start_time;
     // Run the benchmark
-    int result = ${benchmark_name}_entry();
-
+    ${benchmark_name}_entry();
     // Save end time from the timer memory area
-    end_time = *source;
-    if (end_time == 0) {
-        *destination = 0xDEAD0001;  // Error code for invalid timer end
-        return -1;
-    }
-
+    end_time = *system_counter;
     // Wait for synchronization with the root cell script
-    timeout = 0xFFFFFF;
-    while (*destination != 0xBEEFDEAD && timeout--) {
+    while (*shared_memory != 0xBEEFDEAD) {
         __asm__ volatile ("nop");
     }
-    if (timeout == 0) {
-        *destination = 0xDEAD0002;  // Error code for timeout
-        return -1;
-    }
-
     // Write the end time to the shared memory
-    *destination = end_time;
-
-    // Optionally return the benchmark result
-    return result;
+    *shared_memory = end_time;
+    //printk("End Inmate main ${benchmark_name}\n");
 }
 EOF
 }
+
+LIB_FILES=$(find /home/boccolarg/runphi_project/environment_builder/environment/kria/jailhouse/build/jailhouse/inmates/lib -maxdepth 1 -type f -name "*.c" && \
+            find /home/boccolarg/runphi_project/environment_builder/environment/kria/jailhouse/build/jailhouse/inmates/lib/arm-common -maxdepth 1 -type f -name "*.c")
 
 # Read the benchmark file line by line
 current_directory=""
@@ -117,7 +101,7 @@ while IFS= read -r line; do
         wrapper_file="$benchmark_dir/${benchmark_name}_wrapper.c"
 
         if [[ -z $benchmark_files ]]; then
-            echo "No source files found for $benchmark_name" >> $error_log
+            echo "No system_counter files found for $benchmark_name" >> $error_log
             failures+=("$benchmark_name")
             total_count=$((total_count + 1))
             continue
@@ -125,25 +109,92 @@ while IFS= read -r line; do
 
         # Rename only the function definition in benchmark files
         for benchmark_file in $benchmark_files; do
-            sed -i "s/^void[[:space:]]\+${benchmark_name}_entry[[:space:]]*(/int ${benchmark_name}_entry(/" "$benchmark_file"
+            sed -i -E "s/^(\s*)int\s+main\s*\(\s*void\s*\)/\1int ${benchmark_name}_entry(void)/" "$benchmark_file"
         done
+
+
 
         # Create C wrapper file
         create_wrapper "$benchmark_name" "$benchmark_dir"
 
         # Compile the benchmark with the wrapper
         echo "Compiling $benchmark_name with wrapper..."
-        # aarch64-none-elf-gcc -O2 -nostdlib -nodefaultlibs -ffreestanding \
-        #     -o "$elf_dir/$benchmark_name.elf" "$wrapper_file" $benchmark_files 2>> $error_log
-        aarch64-none-elf-gcc -O0 -nostdlib -nodefaultlibs -ffreestanding \
-            -g3 -v \
-            -I./ \
-            -T lscript.ld \
-            -o "$elf_dir/$benchmark_name.elf" "$wrapper_file" $benchmark_files 2>> $error_log
 
-        aarch64-none-elf-objcopy -O binary "$elf_dir/$benchmark_name.elf" "$bin_dir/$benchmark_name.bin" 2>> $error_log
+    # Directories
+    lib_dir="/home/boccolarg/runphi_project/environment_builder/environment/kria/jailhouse/build/jailhouse/inmates/lib/arm64"
+    jailhouse_dir="/home/boccolarg/runphi_project/environment_builder/environment/kria/jailhouse/build/jailhouse"
 
-        # Check if compilation was successful
+    # Verify system_counter files exist before compiling
+    for src_file in "$wrapper_file" $benchmark_files; do
+        if [[ ! -f "$src_file" ]]; then
+            echo "Error: system_counter file $src_file not found!" >> $error_log
+            exit 1
+        fi
+    done
+
+    #Removed -Wstrict-prototypes, -Wmissing-prototypes, -Wmissing-declarations from compiler call
+    # Step 1: Compile the .o object file
+    # Compile each system_counter file into its own .o file
+    for src_file in "$wrapper_file" $benchmark_files; do
+        # Extract the base name of the system_counter file (e.g., "file.c" -> "file")
+        src_basename=$(basename "$src_file" .c)
+
+        aarch64-linux-gnu-gcc \
+            -Wp,-MMD,"${output_dir}/${src_basename}.o.d" \
+            -nostdinc \
+            -I${lib_dir} \
+            -I${lib_dir}/../arm-common/include \
+            -I${lib_dir}/../include \
+            -I${lib_dir}/include \
+            -I${jailhouse_dir}/include \
+            -I${jailhouse_dir}/include/jailhouse \
+            -I${jailhouse_dir}/include/arch/arm \
+            -I${jailhouse_dir}/include/arch/arm64 \
+            -I${jailhouse_dir}/include/arch/arm-common \
+            -I${jailhouse_dir}/include/arch/x86 \
+            -include ./compiler_types.h \
+            -D__KERNEL__ \
+            -mlittle-endian \
+            -DKASAN_SHADOW_SCALE_SHIFT= \
+            -fmacro-prefix-map=./= \
+            -g -O0 \
+            -Werror -Wall -Wtype-limits \
+            -fno-strict-aliasing -fomit-frame-pointer -fno-pic -fno-common \
+            -fno-stack-protector -ffreestanding -ffunction-sections \
+            -Wno-unknown-pragmas -Wno-error=unused-variable -Wno-error=maybe-uninitialized \
+            -D__LINUX_COMPILER_TYPES_H \
+            -include /home/boccolarg/runphi_project/environment_builder/environment/kria/jailhouse/build/jailhouse/include/jailhouse/config.h \
+            -DKBUILD_MODFILE="\"${output_dir}/${benchmark_name}\"" \
+            -DKBUILD_BASENAME="\"${benchmark_name}\"" \
+            -DKBUILD_MODNAME="\"${benchmark_name}\"" \
+            -D__KBUILD_MODNAME=kmod_${benchmark_name} \
+            -c -o "${output_dir}/${src_basename}.o" \
+            "$src_file" 2>> $error_log
+    done
+
+    # Step 2: Link the .o file to create the -linked.o object file
+    aarch64-linux-gnu-ld \
+    -EL \
+    -maarch64elf \
+    -z noexecstack \
+    --gc-sections \
+    -T ${lib_dir}/inmate.lds \
+    "${output_dir}/${benchmark_name}_wrapper.o" \
+    $(for src_file in $benchmark_files; do
+        src_basename=$(basename "$src_file" .c)
+        echo "${output_dir}/${src_basename}.o"
+    done) \
+    "${lib_dir}/lib.a" \
+    -o "${output_dir}/${benchmark_name}-linked.o" 2>> $error_log
+
+    # Step 3: Convert the linked object file to a binary file
+    aarch64-linux-gnu-objcopy \
+        -O binary \
+        --remove-section=.note.gnu.property \
+        "${output_dir}/${benchmark_name}-linked.o" \
+        "${output_dir}/${benchmark_name}.bin" 2>> $error_log
+
+    # Check if compilation was successful
         if [[ $? -eq 0 ]]; then
             success_count=$((success_count + 1))
         else

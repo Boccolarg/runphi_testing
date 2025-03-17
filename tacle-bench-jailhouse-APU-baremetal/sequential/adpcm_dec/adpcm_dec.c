@@ -54,7 +54,7 @@ int adpcm_dec_sin( int n );
 void adpcm_dec_init();
 int adpcm_dec_return();
 void adpcm_dec_main();
-int adpcm_dec_entry( void );
+int adpcm_dec_entry(void);
 
 
 /*
@@ -701,7 +701,7 @@ void _Pragma( "entrypoint" ) adpcm_dec_main( void )
 }
 
 
-int adpcm_dec_entry( void )
+int adpcm_dec_entry(void)
 {
   adpcm_dec_init();
   adpcm_dec_main();

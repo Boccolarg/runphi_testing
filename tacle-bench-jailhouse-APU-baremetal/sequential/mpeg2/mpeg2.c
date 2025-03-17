@@ -90,7 +90,7 @@ int mpeg2_bdist2( unsigned char *, unsigned char *, unsigned char *, int, int,
                   int, int, int, int );
 int mpeg2_variance( unsigned char *, int );
 void mpeg2_main( void );
-int mpeg2_entry( void );
+int mpeg2_entry(void);
 
 
 /*
@@ -13203,7 +13203,7 @@ void _Pragma ( "entrypoint" ) mpeg2_main( void )
 }
 
 
-int mpeg2_entry( void )
+int mpeg2_entry(void)
 {
   mpeg2_init();
   mpeg2_main();

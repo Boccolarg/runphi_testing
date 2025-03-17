@@ -46,7 +46,7 @@ void cjpeg_transupp_do_rot_180( j_compress_ptr );
 void cjpeg_transupp_do_rot_270( j_compress_ptr );
 void cjpeg_transupp_do_transverse( j_compress_ptr );
 void cjpeg_transupp_main( void );
-int cjpeg_transupp_entry( void );
+int cjpeg_transupp_entry(void);
 
 
 /*
@@ -704,7 +704,7 @@ void _Pragma ( "entrypoint" ) cjpeg_transupp_main( void )
 }
 
 
-int cjpeg_transupp_entry( void )
+int cjpeg_transupp_entry(void)
 {
   cjpeg_transupp_init();
   cjpeg_transupp_main();

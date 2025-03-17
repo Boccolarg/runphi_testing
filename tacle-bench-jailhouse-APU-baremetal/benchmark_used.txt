@@ -6,7 +6,6 @@ bsort
 countnegative
 fac
 fft
-filterbank
 fir2dim
 iir
 insertsort
@@ -42,8 +41,6 @@ g723_enc
 gsm_dec
 gsm_enc
 h264_dec
-huff_dec
-huff_enc
 mpeg2
 ndes
 petrinet

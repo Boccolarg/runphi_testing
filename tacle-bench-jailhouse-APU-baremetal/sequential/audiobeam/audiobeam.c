@@ -34,7 +34,7 @@
 void audiobeam_init();
 int audiobeam_return();
 void audiobeam_main( void );
-int audiobeam_entry( void );
+int audiobeam_entry(void);
 void audiobeam_preprocess_delays( struct audiobeam_PreprocessedDelays
                                   prep_delays[  ], float *delays );
 float *audiobeam_parse_line( float *float_arr, int num_mic );
@@ -575,7 +575,7 @@ void _Pragma( "entrypoint" ) audiobeam_main( void )
 }
 
 
-int audiobeam_entry( void )
+int audiobeam_entry(void)
 {
   audiobeam_init();
   audiobeam_main();

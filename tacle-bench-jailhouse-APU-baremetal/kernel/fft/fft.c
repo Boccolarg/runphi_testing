@@ -84,7 +84,7 @@ void fft_pin_down( int input_data[  ] );
 void fft_init( void );
 void fft_main( void );
 int fft_return( void );
-int fft_entry( void );
+int fft_entry(void);
 
 /*
   Forward declaration of global variables
@@ -323,7 +323,7 @@ void _Pragma( "entrypoint" ) fft_main( void )
 }
 
 
-int fft_entry( void )
+int fft_entry(void)
 {
   fft_init();
 

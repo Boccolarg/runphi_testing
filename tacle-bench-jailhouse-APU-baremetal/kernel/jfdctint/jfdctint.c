@@ -101,7 +101,7 @@
 void jfdctint_init();
 int jfdctint_return();
 void jfdctint_main();
-int jfdctint_entry( void );
+int jfdctint_entry(void);
 
 
 #define CONST_BITS  13
@@ -310,7 +310,7 @@ void _Pragma ( "entrypoint" ) jfdctint_main( void )
 }
 
 
-int jfdctint_entry( void )
+int jfdctint_entry(void)
 {
   jfdctint_init();
   jfdctint_main();

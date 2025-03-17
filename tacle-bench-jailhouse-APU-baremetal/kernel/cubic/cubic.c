@@ -39,7 +39,7 @@ void cubic_solveCubic( float a, float b, float c, float d,
 void cubic_main( void );
 void cubic_init( void );
 int cubic_return( void );
-int cubic_entry( void );
+int cubic_entry(void);
 
 
 /*
@@ -148,7 +148,7 @@ void cubic_solveCubic( float a, float b, float c, float d,
 }
 
 
-int cubic_entry( void )
+int cubic_entry(void)
 {
   cubic_init();
   cubic_main();
