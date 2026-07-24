@@ -1,7 +1,6 @@
 powerwindow_PW_Control_PSG_BackL.o: \
  app/powerwindow/powerwindow_PW_Control_PSG_BackL.c compiler_types.h \
- /home/boccolarg/runphi_project/environment_builder/environment/kria/jailhouse/build/jailhouse/include/jailhouse/config.h \
- app/powerwindow/wcclib.h \
+ config.h app/powerwindow/wcclib.h \
  app/powerwindow/powerwindow_HeaderFiles/powerwindow_PW_Control_PSG_BackL.h \
  app/powerwindow/powerwindow_HeaderFiles/../powerwindow_HeaderFiles/powerwindow_rtwtypes.h \
  app/powerwindow/powerwindow_HeaderFiles/../powerwindow_HeaderFiles/powerwindow_rtw_solver.h \

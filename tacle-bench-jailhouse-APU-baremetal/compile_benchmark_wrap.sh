@@ -163,7 +163,7 @@ while IFS= read -r line; do
             -fno-stack-protector -ffreestanding -ffunction-sections \
             -Wno-unknown-pragmas -Wno-error=unused-variable -Wno-error=maybe-uninitialized \
             -D__LINUX_COMPILER_TYPES_H \
-            -include /home/boccolarg/runphi_project/environment_builder/environment/kria/jailhouse/build/jailhouse/include/jailhouse/config.h \
+            -include ./config.h \
             -DKBUILD_MODFILE="\"${output_dir}/${benchmark_name}\"" \
             -DKBUILD_BASENAME="\"${benchmark_name}\"" \
             -DKBUILD_MODNAME="\"${benchmark_name}\"" \

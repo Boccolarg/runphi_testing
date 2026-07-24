@@ -1,5 +1,4 @@
-st_wrapper.o: kernel/st/st_wrapper.c compiler_types.h \
- /home/boccolarg/runphi_project/environment_builder/environment/kria/jailhouse/build/jailhouse/include/jailhouse/config.h \
+st_wrapper.o: kernel/st/st_wrapper.c compiler_types.h config.h \
  /home/boccolarg/runphi_project/environment_builder/environment/kria/jailhouse/build/jailhouse/inmates/lib/arm64/../arm-common/include/inmate.h \
  /home/boccolarg/runphi_project/environment_builder/environment/kria/jailhouse/build/jailhouse/inmates/lib/arm64/../arm-common/include/asm/processor.h \
  /home/boccolarg/runphi_project/environment_builder/environment/kria/jailhouse/build/jailhouse/inmates/lib/arm64/include/arch/inmate.h \

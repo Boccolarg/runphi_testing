@@ -23,11 +23,13 @@ compilation_report="compilation_report.txt"
 > $compilation_report
 
 # Clear previous executables folder
+rm -rf $elf_dir
+rm -rf $bin_dir
 rm -rf $output_dir
 
 # Create the output directory if it doesn't exist
-#mkdir -p $elf_dir
-#mkdir -p $bin_dir
+mkdir -p $elf_dir
+mkdir -p $bin_dir
 mkdir -p $output_dir
 
 # Function to create a C wrapper

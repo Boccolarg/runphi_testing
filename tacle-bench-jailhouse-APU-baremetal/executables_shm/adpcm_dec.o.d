@@ -1,2 +1,1 @@
-adpcm_dec.o: sequential/adpcm_dec/adpcm_dec.c compiler_types.h \
- /home/boccolarg/runphi_project/environment_builder/environment/kria/jailhouse/build/jailhouse/include/jailhouse/config.h
+adpcm_dec.o: sequential/adpcm_dec/adpcm_dec.c compiler_types.h config.h

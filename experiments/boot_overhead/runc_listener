@@ -1,0 +1,54 @@
+#!/bin/bash
+#*********************************************
+# runPHI boot-overhead experiment: runc-level listener.
+#
+# Drop-in wrapper for an OCI runtime (runc, runc_vanilla, runphi). On a
+# "create" verb, captures the kernel-monotonic timestamp (/proc/timer_list
+# "now") together with the container id, then exec()s the real target with
+# all original arguments unchanged. Other verbs pass straight through.
+#
+# Captured at this point, t0 excludes docker CLI + dockerd + containerd +
+# shim startup from the measured boot interval - matching the classic
+# `runc_listener` instrumentation used in earlier experiments.
+#
+# Wire-in (docker /etc/docker/daemon.json):
+#   "runphi_listened":  { "path": "/usr/local/sbin/runc_listener",
+#                         "runtimeArgs": ["/usr/bin/runc"] }
+#   "vanilla_listened": { "path": "/usr/local/sbin/runc_listener",
+#                         "runtimeArgs": ["/usr/local/sbin/runc_vanilla"] }
+#
+# Output file:
+#   $RUNC_LISTENER_FILE if set in the runtime's environment, otherwise
+#   /tmp/runc_listener_create.txt. One "CREATE <container_id> <now_ns>"
+#   line per intercepted create call.
+#*********************************************
+
+TARGET="$1"; shift
+
+OUT="${RUNC_LISTENER_FILE:-/tmp/runc_listener_create.txt}"
+
+# Detect "create" verb. Pure-bash scan so we do not depend on coreutils
+# being page-cache resident after a drop_caches.
+is_create=0
+for arg in "$@"; do
+    if [[ "$arg" == "create" ]]; then
+        is_create=1
+        break
+    fi
+done
+
+if [[ "$is_create" -eq 1 ]]; then
+    now_ns=""
+    while read -r key _at val _unit; do
+        if [[ "$key" == "now" ]]; then
+            now_ns="$val"
+            break
+        fi
+    done < /proc/timer_list
+    # OCI runc CLI: container id is the last positional argument.
+    id="${!#}"
+    # Best-effort append; never block the runtime if the file is unwritable.
+    printf 'CREATE %s %s\n' "$id" "$now_ns" >> "$OUT" 2>/dev/null
+fi
+
+exec "$TARGET" "$@"

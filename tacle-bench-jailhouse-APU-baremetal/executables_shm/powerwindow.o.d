@@ -1,5 +1,4 @@
-powerwindow.o: app/powerwindow/powerwindow.c compiler_types.h \
- /home/boccolarg/runphi_project/environment_builder/environment/kria/jailhouse/build/jailhouse/include/jailhouse/config.h \
+powerwindow.o: app/powerwindow/powerwindow.c compiler_types.h config.h \
  app/powerwindow/powerwindow_HeaderFiles/powerwindow.h \
  app/powerwindow/powerwindow_HeaderFiles/powerwindow_PW_Control_PSG_Front.h \
  app/powerwindow/powerwindow_HeaderFiles/../powerwindow_HeaderFiles/powerwindow_rtwtypes.h \
