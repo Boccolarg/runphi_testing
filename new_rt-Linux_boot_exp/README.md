@@ -455,6 +455,8 @@ Discovered the hard way — check these first if something misbehaves.
 | `/usr/bin/gcc` | Optional containerized-gcc wrapper (see below). On `.52` the real gcc is backed up as `/usr/bin/gcc.native`. |
 | `/run/rt_measure_start` | Marker: when present, the shim also logs `START`. Managed by `boot_bench.sh -s on`; ephemeral (cleared on reboot). |
 | `/root/max_perf.sh` | Locks CPUs at max frequency; run after each reboot. |
+| `/boot/firmware/boot.scr` | U-Boot script holding the **kernel cmdline** (see below). Backup: `boot.scr.bak`. |
+| `/root/S60dockerd.bak.predns` | Backup of the pre-DNS-fix init script. Must NOT live in `/etc/init.d` (rcS globs `S??*`). |
 | `/root/container_volume/` | Bind-mounted into containers as `/home`. Holds `booted` and `times.txt`. |
 | `/root/container_volume/times.txt` | The `CREATE`/`START`/`BOOTED` log all sides append to. |
 
@@ -480,6 +482,67 @@ $SSH root@<board> 'cp /etc/init.d/S60dockerd.bak.predns /etc/init.d/S60dockerd'
 > Both boards are Buildroot; a full image rebuild would overwrite this patch (and
 > the `gcc` wrapper). `.52` is NFS-root (exported from `192.168.100.45`), so the
 > edit lives in that shared export.
+
+## Kernel cmdline / CPU isolation
+
+The kernel cmdline lives in **`/boot/firmware/boot.scr`** (a U-Boot script image on
+`mmcblk0p1`), *not* in a config file on the rootfs. Current value:
+
+```
+isolcpus=domain,managed_irq,2-3 skew_tick=1 deferred_probe_timeout=1 earlycon clk_ignore_unused root=/dev/mmcblk0p2 rw rootwait
+```
+
+⚠️ **Until 2026-07-25 this read `isolcpus=nohz,domain,managed_irq,2-3`, and the `nohz`
+flag made the kernel discard the entire `isolcpus=` parameter** (it lacks
+`CONFIG_NO_HZ_FULL`, so the parameter showed up under "Unknown kernel command line
+parameters" and `/sys/devices/system/cpu/isolated` was empty). Cores 2–3 were therefore
+**not isolated at all**, so any benchmark run with `-p 2,3` before that date had no CPU
+isolation. Verify after a reboot:
+
+```sh
+$SSH root@192.168.100.47 'cat /sys/devices/system/cpu/isolated'   # expect: 2-3
+```
+
+`deferred_probe_timeout=1` was added because the default 10 s timeout (triggered by the
+board's dead I²C mux) accounted for ~10 s of a ~21 s boot.
+
+To edit it: extract the payload, change it, and repackage — original kept as
+`/boot/firmware/boot.scr.bak`. **`/boot/firmware` is mounted read-only on purpose**
+(see below), so remount it first:
+
+```sh
+mount -o remount,rw /boot/firmware
+tail -c +73 boot.scr > boot.cmd            # strip 64B uImage + 8B script header
+# ...edit boot.cmd...
+mkimage -A arm64 -O linux -T script -C gzip -n "" -d boot.cmd boot.scr
+sync && mount -o remount,ro /boot/firmware
+```
+
+> ⚠️ fstab mounts `mmcblk0p1` **`ro`** deliberately. Mounted `rw`, an unclean shutdown
+> can corrupt `BOOT.BIN` / `Image` / `boot.scr` and leave the board unbootable — the
+> first reboot after the mount point was created already produced
+> `FAT-fs (mmcblk0p1): Volume was not properly unmounted`.
+
+`nohz_full=`, `rcu_nocbs=`, `rcu_nocb_poll`, `nosoftlockup` and `nowatchdog` need a
+kernel rebuild (`CONFIG_NO_HZ_FULL`, `CONFIG_RCU_NOCB_CPU`, lockup detector) and were
+removed as no-ops; `processor.max_cstate=` / `processor_idle.max_cstate=` are x86-only.
+
+Other board fixes applied at the same time: `/boot/firmware` mount point created (fstab
+already referenced it), the RTC set with `hwclock -w` (it booted as year **2048**, which
+breaks TLS/`docker pull`; there is no NTP daemon, so re-set it manually if it drifts),
+and the unused `S80dhcp-server` / `S80dhcp-relay` / `S80dnsmasq` / `S90collectd` init
+scripts disabled by moving them to `/etc/init.d/disabled/` (move one back to re-enable).
+
+> **Gotcha:** the only reliable way to enable/disable a Buildroot init script is the
+> **filename**, because `rcS` does `for i in /etc/init.d/S??*` and runs every regular
+> file that matches — it never checks the execute bit. Two consequences:
+> - Don't leave backups matching `S??*` there (a `S60dockerd.bak.predns` backup was
+>   being executed at every boot, causing a spurious `Starting dockerd: FAIL`).
+> - `chmod -x` does **not** disable a script: busybox `chmod -x` clears only the
+>   *owner's* x bit (mode becomes `-rw-r-xr-x`), and root can execute a file if *any*
+>   x bit is set. Rename/move instead.
+
+---
 
 ## Optional: compile on the board (containerized gcc)
 

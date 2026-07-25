@@ -1,7 +1,7 @@
-samples   : 20 (0 unpaired)
-min       :   623335.8 us
-mean      :   642560.3 us
-median    :   641540.5 us
-p99       :   656839.0 us
-max       :   667867.2 us
-stddev    :     9591.8 us
+samples   : 200 (0 unpaired)
+min       :   694594.2 us
+mean      :   733245.4 us
+median    :   732225.5 us
+p99       :   774727.4 us
+max       :   780447.7 us
+stddev    :    17217.7 us
