@@ -1,8 +1,0 @@
-compile benchmark wrap crea i benchmark con shmem che sono meglio di quelli con gic ora funzionano 
-bisognava mappare la memoria con le due istruzioni all'inizio:
-    map_range((void *)system_counter, 4, MAP_UNCACHED);
-    map_range((void *)shared_memory, 4, MAP_UNCACHED);
-
-quando si passa da versione gic a shmem bisogna rimettere i sorgenti  taclebenchunchanged e ricompialre 
-altrimenti da multiple definition di benchmark_entry, 
-per 3 dei benchmark la sed noin funziona quindi bisogna cambiare il main con entry a mano
