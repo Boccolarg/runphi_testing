@@ -5,7 +5,7 @@
       "includePath": [
         "${workspaceFolder}/**"
       ],
-      "compilerPath": "/home/linuxbrew/.linuxbrew/opt/gcc",
+      "compilerPath": "/home/linuxbrew/.linuxbrew/bin/gcc-16",
       "cStandard": "${default}",
       "cppStandard": "${default}",
       "intelliSenseMode": "linux-gcc-x64",
