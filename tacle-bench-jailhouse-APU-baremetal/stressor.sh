@@ -21,15 +21,57 @@
 # alone does not bring it back.
 
 # "baseline" means no stressor at all; the rest are stress-ng <type><workers>.
-CONFIGS=("baseline" "fork8" "memcpy8" "open8" "udp8" "cpu8")
+#
+# 4 workers, not the KV260 campaign's 8. With only 3 root-cell CPUs, 8 runnable
+# hogs starved the RCU grace-period kthread hard enough to wedge CPU hotplug --
+# and therefore `jailhouse cell create` -- for hours at a time. Interference here
+# is bound by the 3 busy cores rather than by the worker count, so 4 saturates
+# them just as thoroughly while leaving the root cell usable. Deviation from the
+# KV260 configuration: recorded in the README.
+CONFIGS=("baseline" "fork4" "memcpy4" "open4" "udp4" "cpu4")
 
 BENCH_SCRIPT="/root/taclebench/workdirs/APU_jailhouse/external_script_shmem.sh"
 RESULTS_DIR_BASE="/root/taclebench/results/APU_jailhouse/shmem"
 LOG_DIR="${RESULTS_DIR_BASE}/logs"
 WAIT_FOR_STABILIZATION=10
-STRESS_TIMEOUT=10h
 
-BENCH_ARGS=("$@")
+# Safety net only, against a leaked stress-ng: each configuration kills its own
+# stressor explicitly when the benchmarks finish. It must comfortably exceed the
+# longest configuration. This was 10h, which fork8 overran on 2026-07-29 —
+# stress-ng exited cleanly at 36000s while 46 benchmarks were still to run, and
+# they were recorded as stressed while nothing was stressing them. The bench
+# script now also aborts if the stressor disappears (--require-pid).
+STRESS_TIMEOUT=72h
+
+# -r/--resume: skip configurations that are already complete and, within a
+# configuration, benchmarks that already hold a full set of iterations. Makes the
+# whole campaign restartable after a crash at the cost of at most one benchmark.
+RESUME=""
+BENCH_ARGS=()
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        -r|--resume) RESUME=1; shift ;;
+        # -c "open8 udp8": run only these configurations, in this order
+        -c|--configs) read -r -a CONFIGS <<< "$2"; shift 2 ;;
+        *) BENCH_ARGS+=("$1"); shift ;;
+    esac
+done
+[[ -n "$RESUME" ]] && BENCH_ARGS+=("--resume")
+
+ITERATIONS_EXPECTED=$(sed -n 's/^ITERATIONS=\([0-9]*\).*/\1/p' "$BENCH_SCRIPT" | head -1)
+BIN_COUNT=$(find /root/taclebench/executables/APU_jailhouse/shmem -type f -name '*.bin' 2>/dev/null | wc -l)
+
+# A configuration counts as done when every binary has a full result file.
+config_is_complete() {
+    local dir=$1 full=0 f n
+    [[ -d $dir ]] || return 1
+    for f in "$dir"/*.txt; do
+        [[ -e $f ]] || continue
+        n=$(wc -l < "$f")
+        (( n == ITERATIONS_EXPECTED )) && full=$((full + 1))
+    done
+    (( full == BIN_COUNT && BIN_COUNT > 0 ))
+}
 
 mkdir -p "$RESULTS_DIR_BASE" "$LOG_DIR"
 
@@ -39,6 +81,23 @@ if [[ "$ACTUAL_CPUS" != "$EXPECTED_CPUS" ]]; then
     echo "WARNING: this shell may use CPUs $ACTUAL_CPUS, expected $EXPECTED_CPUS."
     echo "         Check that the kernel was booted with isolcpus=domain,managed_irq,3;"
     echo "         otherwise the stressors will not load all three root-cell CPUs."
+fi
+
+# The deprecated cortex_edac driver polls per-CPU cache ECC registers every
+# 100 ms via smp_call_function_any(). When that IPI targets the CPU Jailhouse has
+# just taken for the inmate cell, the completion never arrives: the edac-poller
+# kworker wedges forever, RCU grace periods stop advancing and the board hangs
+# (rcu_sched self-detected stall, trace through cortex_arm64_edac_check). This
+# killed two campaigns before it was diagnosed. Unbinding costs only L1/L2 ECC
+# error reporting, and a reboot restores it.
+EDAC_DRV=/sys/bus/platform/drivers/cortex_edac
+if [[ -e "$EDAC_DRV/edac" ]]; then
+    echo "Unbinding cortex_edac: its 100 ms per-CPU IPI poll deadlocks against Jailhouse CPU handover."
+    if echo edac > "$EDAC_DRV/unbind" 2>/dev/null; then
+        echo "  unbound."
+    else
+        echo "  WARNING: unbind failed. The run is likely to hang; investigate before trusting results." >&2
+    fi
 fi
 
 # cpufreq resets on every boot and this kernel only has the userspace governor,
@@ -62,6 +121,12 @@ for config in "${CONFIGS[@]}"; do
     echo "Configuration: $config   ($(date))"
 
     RESULTS_DIR="${RESULTS_DIR_BASE}/${config}_raw"
+
+    if [[ -n "$RESUME" ]] && config_is_complete "$RESULTS_DIR"; then
+        echo "Already complete ($BIN_COUNT benchmarks x $ITERATIONS_EXPECTED iterations), skipping."
+        continue
+    fi
+
     mkdir -p "$RESULTS_DIR"
 
     STRESS_PID=""
@@ -69,7 +134,10 @@ for config in "${CONFIGS[@]}"; do
         stress_type=$(sed -E 's/([a-z]+)[0-9]+/\1/' <<< "$config")
         stress_count=$(sed -E 's/[a-z]+([0-9]+)/\1/' <<< "$config")
 
-        stress-ng --"$stress_type" "$stress_count" --timeout "$STRESS_TIMEOUT" \
+        # nice 19: the stressors must saturate the cores, but must never starve
+        # the RCU kthreads or the harness. Combined with rcutree.kthread_prio=1
+        # this is what keeps CPU hotplug (and so `jailhouse cell create`) alive.
+        nice -n 19 stress-ng --"$stress_type" "$stress_count" --timeout "$STRESS_TIMEOUT" \
             > "${LOG_DIR}/stress_${config}.log" 2>&1 &
         STRESS_PID=$!
         echo "Started stress-ng --$stress_type $stress_count (PID $STRESS_PID)"
@@ -88,10 +156,16 @@ for config in "${CONFIGS[@]}"; do
     echo "Running benchmarks into $RESULTS_DIR ..."
     # tee rather than redirect, so a `screen -r` shows live per-benchmark progress
     # while the full transcript still lands in the log.
-    "$BENCH_SCRIPT" -o "$RESULTS_DIR" "${BENCH_ARGS[@]}" 2>&1 \
+    REQUIRE=()
+    [[ -n "$STRESS_PID" ]] && REQUIRE=(--require-pid "$STRESS_PID")
+
+    "$BENCH_SCRIPT" -o "$RESULTS_DIR" "${REQUIRE[@]}" "${BENCH_ARGS[@]}" 2>&1 \
         | tee "${LOG_DIR}/bench_${config}.log"
     BENCH_EXIT=${PIPESTATUS[0]}
-    if [[ $BENCH_EXIT -ne 0 ]]; then
+    if [[ $BENCH_EXIT -eq 3 ]]; then
+        echo "ERROR: the stressor died mid-configuration, so $config is INCOMPLETE." >&2
+        echo "       No unstressed data was recorded. Rerun with --resume to finish it." >&2
+    elif [[ $BENCH_EXIT -ne 0 ]]; then
         echo "ERROR: benchmark script exited with code $BENCH_EXIT, see ${LOG_DIR}/bench_${config}.log" >&2
     fi
     echo "Collected $(ls "$RESULTS_DIR" | wc -l) result files."
@@ -119,7 +193,12 @@ echo
 echo "Summary:"
 for config in "${CONFIGS[@]}"; do
     d="${RESULTS_DIR_BASE}/${config}_raw"
-    n=$(ls "$d" 2>/dev/null | wc -l)
-    empty=$(find "$d" -type f -empty 2>/dev/null | wc -l)
-    echo "  ${config}_raw: $n files, $empty empty"
+    full=0
+    for f in "$d"/results_*.txt; do
+        [[ -e $f ]] || continue
+        (( $(wc -l < "$f") == ITERATIONS_EXPECTED )) && full=$((full + 1))
+    done
+    dropped=""
+    [[ -s "$d/DROPPED.txt" ]] && dropped="  DROPPED: $(cut -d' ' -f1 "$d/DROPPED.txt" | paste -sd' ')"
+    echo "  ${config}_raw: $full/$BIN_COUNT complete${dropped}"
 done

@@ -40,23 +40,40 @@ TIMEOUT_SECONDS=30
 TIMEOUT_THRESHOLD=3
 POLL_INTERVAL=0.5                                     # mailbox polling period
 
+# `jailhouse cell create/destroy` hotplugs the inmate's CPU, and CPU hotplug
+# calls synchronize_rcu(). If the RCU grace-period kthread is being starved by
+# the stressors, those calls block indefinitely: on 2026-07-30 that wedged a
+# configuration for over two hours on a single benchmark, twice. The kernel side
+# is addressed by rcutree.kthread_prio=1 (see README); these caps are the
+# harness-side backstop so a wedge costs one benchmark instead of a whole night.
+OP_TIMEOUT=60                                         # per jailhouse/sync operation
+BENCH_TIME_CAP=1200                                   # per benchmark; healthy is 1-5 min
+
 # jailhouse is not on the default PATH
 if [[ -r /etc/profile.d/jailhouse_path.sh ]]; then
     . /etc/profile.d/jailhouse_path.sh
 fi
 
 function show_help() {
-    echo "Usage: $0 [-b benchmark1 benchmark2 ...] [-o results_dir]"
-    echo "  -b          run only the specified benchmarks (names without .bin)"
-    echo "  -o          write results into this directory instead of $RESULTS_DIR"
-    echo "  -h, --help  show this help message and exit"
+    echo "Usage: $0 [-b benchmark1 benchmark2 ...] [-o results_dir] [-r]"
+    echo "  -b            run only the specified benchmarks (names without .bin)"
+    echo "  -o            write results into this directory instead of $RESULTS_DIR"
+    echo "  -r, --resume  skip benchmarks whose result file already holds"
+    echo "                $ITERATIONS iterations; redo partial ones from scratch"
+    echo "  --require-pid PID"
+    echo "                abort if that process (the stressor) is no longer running"
+    echo "  -h, --help    show this help message and exit"
     exit 0
 }
 
 SELECTED_BENCHMARKS=()
+RESUME=""
+REQUIRE_PID=""
 while [[ $# -gt 0 ]]; do
     case "$1" in
         -h|--help) show_help ;;
+        -r|--resume) RESUME=1; shift ;;
+        --require-pid) REQUIRE_PID="$2"; shift 2 ;;
         -o) RESULTS_DIR="$2"; shift 2 ;;
         -b) shift
             while [[ $# -gt 0 && "$1" != -* ]]; do
@@ -118,6 +135,21 @@ read_mailbox() {
     devmem $ADDRESS 32 2>/dev/null | grep -oE '0x[0-9A-Fa-f]+$'
 }
 
+# busybox has no timeout(1), so bound a command by hand. Returns the command's
+# status, or 137 if it had to be killed.
+run_bounded() {
+    local limit=$1; shift
+    "$@" &
+    local pid=$!
+    ( sleep "$limit"; kill -KILL "$pid" 2>/dev/null ) 2>/dev/null &
+    local killer=$!
+    wait "$pid" 2>/dev/null
+    local rc=$?
+    kill -KILL "$killer" 2>/dev/null
+    wait "$killer" 2>/dev/null
+    return $rc
+}
+
 # Poll the mailbox until it moves away from $1. Echoes the new value, or
 # nothing on timeout.
 wait_for_change() {
@@ -139,38 +171,85 @@ wait_for_change() {
 
 BENCHMARK_COUNTER=0
 FAILED_BENCHMARKS=()
+DROPPED_BENCHMARKS=()
+# Benchmarks abandoned under this stressor, so a --resume does not retry them
+# forever. Read by the campaign summary; report these alongside the results.
+DROPPED_FILE="$RESULTS_DIR/DROPPED.txt"
 
 for BIN_FILE in ${BENCHMARKS[@]}; do
     BENCHMARK_COUNTER=$((BENCHMARK_COUNTER + 1))
     echo "Processing benchmark $BIN_FILE ($BENCHMARK_COUNTER/${#BENCHMARKS[@]})..."
 
     RESULT_FILE="$RESULTS_DIR/results_${BIN_FILE}.txt"
+
+    if [[ -n "$RESUME" && -f "$DROPPED_FILE" ]] && grep -q "^${BIN_FILE} " "$DROPPED_FILE"; then
+        echo "  previously dropped under this stressor, skipping."
+        DROPPED_BENCHMARKS+=("$BIN_FILE")
+        continue
+    fi
+
+    # With -r, a file holding a full set of iterations is left untouched. A
+    # partial one is redone from scratch: an interrupted run leaves the last
+    # iteration missing, and appending to it would mix two machine states.
+    if [[ -n "$RESUME" && -f "$RESULT_FILE" ]]; then
+        HAVE=$(wc -l < "$RESULT_FILE")
+        if (( HAVE == ITERATIONS )); then
+            echo "  already complete ($HAVE/$ITERATIONS iterations), skipping."
+            continue
+        fi
+        (( HAVE > 0 )) && echo "  partial ($HAVE/$ITERATIONS iterations), redoing from scratch."
+    fi
+
     : > "$RESULT_FILE"
 
     TIMEOUT_COUNT=0
+    BENCH_START=$SECONDS
 
     for ((ITER=1; ITER<=ITERATIONS; ITER++)); do
+        # Give up on a benchmark that is not progressing under this stressor
+        # rather than let it consume the whole run. Partial data is discarded:
+        # a handful of iterations is not a usable sample.
+        if (( SECONDS - BENCH_START > BENCH_TIME_CAP )); then
+            echo "  DROPPING $BIN_FILE: only $((ITER-1))/$ITERATIONS iterations in ${BENCH_TIME_CAP}s."
+            echo "${BIN_FILE} dropped after $((ITER-1))/$ITERATIONS iterations (exceeded ${BENCH_TIME_CAP}s)" >> "$DROPPED_FILE"
+            DROPPED_BENCHMARKS+=("$BIN_FILE")
+            rm -f "$RESULT_FILE"
+            run_bounded $OP_TIMEOUT jailhouse cell destroy $CELL_NAME >/dev/null 2>&1
+            continue 2
+        fi
+
         echo "Iteration $ITER/$ITERATIONS for benchmark $BIN_FILE..."
+
+        # Anything measured after the stressor dies is silently an unstressed
+        # run. A 10h stress-ng timeout did exactly that to fork8 on 2026-07-29,
+        # invalidating 46 of its 52 benchmarks before anyone noticed. Refuse to
+        # collect data we would have to throw away.
+        if [[ -n "$REQUIRE_PID" ]] && ! kill -0 "$REQUIRE_PID" 2>/dev/null; then
+            echo "ERROR: the stressor (PID $REQUIRE_PID) is no longer running." >&2
+            echo "       Aborting so the remaining benchmarks are not recorded as stressed." >&2
+            jailhouse cell destroy $CELL_NAME >/dev/null 2>&1
+            exit 3
+        fi
 
         if ! devmem $ADDRESS 32 $INITIAL_VALUE; then
             echo "Error: Failed to write initial value to memory." >&2
             continue
         fi
 
-        if ! jailhouse cell create "$CELL_CONFIG"; then
+        if ! run_bounded $OP_TIMEOUT jailhouse cell create "$CELL_CONFIG"; then
             echo "Error: Failed to create Jailhouse cell." >&2
             continue
         fi
 
-        if ! jailhouse cell load $CELL_NAME $BIN_FILE_DIR/$BIN_FILE; then
+        if ! run_bounded $OP_TIMEOUT jailhouse cell load $CELL_NAME $BIN_FILE_DIR/$BIN_FILE; then
             echo "Error: Failed to load binary into Jailhouse cell." >&2
-            jailhouse cell destroy $CELL_NAME
+            run_bounded $OP_TIMEOUT jailhouse cell destroy $CELL_NAME
             continue
         fi
 
-        if ! jailhouse cell start $CELL_NAME; then
+        if ! run_bounded $OP_TIMEOUT jailhouse cell start $CELL_NAME; then
             echo "Error: Failed to start Jailhouse cell." >&2
-            jailhouse cell destroy $CELL_NAME
+            run_bounded $OP_TIMEOUT jailhouse cell destroy $CELL_NAME
             continue
         fi
 
@@ -178,7 +257,7 @@ for BIN_FILE in ${BENCHMARKS[@]}; do
         # the acknowledgement, so the wait below is not part of the measurement.
         if ! START_VALUE=$(wait_for_change "$INITIAL_VALUE"); then
             echo "Timeout while waiting for start value." >&2
-            jailhouse cell destroy $CELL_NAME
+            run_bounded $OP_TIMEOUT jailhouse cell destroy $CELL_NAME
             TIMEOUT_COUNT=$((TIMEOUT_COUNT + 1))
             (( TIMEOUT_COUNT >= TIMEOUT_THRESHOLD )) && break
             continue
@@ -187,23 +266,23 @@ for BIN_FILE in ${BENCHMARKS[@]}; do
 
         if ! devmem $ADDRESS 32 $INTERMEDIATE_VALUE; then
             echo "Error: Failed to write intermediate value to memory." >&2
-            jailhouse cell destroy $CELL_NAME
+            run_bounded $OP_TIMEOUT jailhouse cell destroy $CELL_NAME
             continue
         fi
 
         if ! END_VALUE=$(wait_for_change "$INTERMEDIATE_VALUE"); then
             echo "Timeout while waiting for end value." >&2
-            jailhouse cell destroy $CELL_NAME
+            run_bounded $OP_TIMEOUT jailhouse cell destroy $CELL_NAME
             TIMEOUT_COUNT=$((TIMEOUT_COUNT + 1))
             (( TIMEOUT_COUNT >= TIMEOUT_THRESHOLD )) && break
             continue
         fi
         echo "Value changed! End value: $END_VALUE"
 
-        jailhouse cell destroy $CELL_NAME
+        run_bounded $OP_TIMEOUT jailhouse cell destroy $CELL_NAME
 
-        sync
-        echo 3 > /proc/sys/vm/drop_caches
+        run_bounded $OP_TIMEOUT sync
+        run_bounded $OP_TIMEOUT sh -c 'echo 3 > /proc/sys/vm/drop_caches'
         sleep 2
 
         echo "Iteration $ITER: Start value: $START_VALUE, End value: $END_VALUE" >> "$RESULT_FILE"
@@ -223,7 +302,16 @@ if [[ ${#FAILED_BENCHMARKS[@]} -gt 0 ]]; then
     for FAILED in "${FAILED_BENCHMARKS[@]}"; do
         echo "- $FAILED"
     done
-else
+fi
+
+if [[ ${#DROPPED_BENCHMARKS[@]} -gt 0 ]]; then
+    echo "DROPPED under this stressor (no usable data, see $DROPPED_FILE):"
+    for D in "${DROPPED_BENCHMARKS[@]}"; do
+        echo "- $D"
+    done
+fi
+
+if [[ ${#FAILED_BENCHMARKS[@]} -eq 0 && ${#DROPPED_BENCHMARKS[@]} -eq 0 ]]; then
     echo "All benchmarks completed successfully."
 fi
 
