@@ -13,8 +13,15 @@ port was mostly a matter of addresses and paths. The KV260 results live in
 
 Each benchmark runs 31 times per configuration, under six configurations:
 `baseline` (idle root cell) plus the `fork4`, `memcpy4`, `open4`, `udp4` and
-`cpu4` stressors. One configuration takes about an hour, so a full campaign is
-roughly six.
+`cpu4` stressors. One configuration takes about an hour.
+
+> [!WARNING]
+> **Status: 3 of 6 configurations complete.** `baseline`, `fork4` and `open4` are
+> done at 52/52. `cpu4`, `udp4` and `memcpy4` cannot currently be completed: the
+> board wedges within minutes because this kernel was built `PREEMPT_NONE` while
+> the KV260 ran `PREEMPT_RT`. Diagnosis and the fix are in
+> [the deadlocks](#the-two-deadlocks--read-this-before-running); the kernel
+> rebuild has not been done.
 
 > [!IMPORTANT]
 > Two root-Linux behaviours will hang this board mid-campaign until they are
@@ -112,7 +119,8 @@ or warns about each:
 | precondition | survives reboot? | why |
 |---|---|---|
 | cmdline `isolcpus=domain,managed_irq,3` | yes | so stressors reach all three root CPUs — see [Interference placement](#interference-placement) |
-| cmdline `rcutree.kthread_prio=1` | yes | so the RCU kthread cannot be starved — see [the deadlocks](#the-two-deadlocks--read-this-before-running) |
+| cmdline `rcutree.kthread_prio=1` | yes | present, but does **not** fix the timer wedge — see [the deadlocks](#the-two-deadlocks--read-this-before-running) |
+| `rcu_sched` RT promotion (`chrt -f -p 1`) | **no** (auto-handled by `stressor.sh`) | dynamically promotes `rcu_sched` to `SCHED_FIFO` 1 if kernel command-line parameter was omitted |
 | `/root/max_perf.sh` | **no** | cpufreq resets at boot and this kernel has only the `userspace` governor |
 | unbind `cortex_edac` | **no** | its 100 ms per-CPU IPI poll deadlocks against Jailhouse CPU handover |
 
@@ -153,7 +161,7 @@ configuration), so run it detached:
 ```sh
 ssh root@192.168.100.47
 screen -dmS taclebench bash -c '. /etc/profile.d/jailhouse_path.sh; \
-  /root/taclebench/workdirs/APU_jailhouse/stressor.sh 2>&1 \
+  /root/taclebench/workdirs/APU_jailhouse/stressor.sh --resume 2>&1 \
   | tee /root/taclebench/results/APU_jailhouse/shmem/run.log; \
   echo "=== RUN FINISHED ==="; exec bash'
 
@@ -224,56 +232,96 @@ absent, leaving only the interrupt-driven `zynqmp_ocm` (`poll_msec=0`, no IPI).
 Anything else in root Linux that polls per-CPU registers by IPI is a candidate
 for the same deadlock. `zynqmp_ocm` is safe because it is interrupt-driven.
 
-### 2. RCU starvation — CPU hotplug that can never complete
+### 2. RCU / timer wedge — root cause is the kernel's preemption model
 
-CPU hotplug calls `synchronize_rcu()`, so `jailhouse cell create` cannot return
-until an RCU grace period completes. With the default `rcutree.kthread_prio=0`
-the RCU grace-period kthread is an ordinary `SCHED_OTHER` task, and enough
-runnable stressor workers on only three root CPUs simply never let it run. Once
-it falls behind, the next `jailhouse` call blocks indefinitely — and because the
-stressors keep running, it never recovers.
+**This is unresolved on the ZCU104 and it blocks three of the six
+configurations.** The root cause is now known; the fix is a kernel rebuild that
+has not been done.
 
-Unlike the EDAC case there is **no stall trace and no panic**. The console shows
-only starvation notices, and the machine stays up:
+The board wedges a few minutes into any configuration whose stressor saturates
+the CPUs. The console shows no panic and no self-detected stall, only:
 
 ```
-rcu: INFO: rcu_preempt detected expedited stalls / kthread starved
-rcu: RCU grace-period kthread stack dump:
-task:rcu_sched       state:R   ...  rcu_gp_fqs_loop+0xe8/0x374
-rcu: Stack dump where RCU GP kthread last ran:
-task:stress-ng-memcp state:R  running task
+rcu: rcu_sched kthread timer wakeup didn't happen for 5254 jiffies! RCU_GP_WAIT_FQS(5)
+rcu: 	Possible timer handling issue on cpu=2 timer-softirq=91070
+rcu: rcu_sched kthread starved for 5260 jiffies! ... ->cpu=2
+task:stress-ng-cpu   state:R  running task
 ```
 
-The tell is a **single benchmark making no progress for hours** while its
-neighbours were fine. It cost ~9h50m on `bitcount` under `fork8` and ~2h18m on
-`gsm_enc` under `memcpy8` — different benchmarks each time, because it is not the
-benchmark. Meanwhile sshd may be too starved to complete a banner exchange, which
-reads exactly like a dead board.
+Read that carefully: `rcu_sched` is **asleep in `schedule_timeout()` and its
+wakeup timer never fired**. It is not a runnable task being denied CPU. Sometimes
+the board instead goes instantly silent with no message at all.
 
-Three changes together fix it, and all three matter:
+#### The real cause
 
-| change | where | effect |
+The KV260, which ran this campaign at **8 workers with no trouble**, used a
+**`PREEMPT_RT`** kernel. The ZCU104 is running **`CONFIG_PREEMPT_NONE`**:
+
+| | KV260 | ZCU104 (as built) |
 |---|---|---|
-| `rcutree.kthread_prio=1` | kernel cmdline | `rcu_sched` becomes `SCHED_FIFO` prio 1 and cannot be starved |
-| `nice -n 19` on stress-ng | `stressor.sh` | stressors still pin every core but yield to kernel threads |
-| 4 workers, not 8 | `stressor.sh` | fewer runnable hogs competing with the harness |
+| preemption | `CONFIG_PREEMPT_RT=y` | **`CONFIG_PREEMPT_NONE=y`** |
+| tick rate | `CONFIG_HZ_1000` | `CONFIG_HZ=250` |
+| `CONFIG_NO_HZ_FULL` | `=y` | not set |
+| cmdline | `nohz_full=2-3 rcu_nocbs=2-3 rcu_nocb_poll nosoftlockup nowatchdog` | none of these |
 
-Verify after boot:
+Two distinct gaps. First, **the ZCU104 was built from the wrong defconfig**:
+every KV260 jailhouse defconfig sets `PREEMPT_RT`, including the plain one, while
+`jailhouse_zcu104_kernel_defconfig` sets no preemption model at all and so falls
+back to `PREEMPT_NONE`. The board is not even running its own intended config —
+`jailhouse_zcu104_isol_kernel_defconfig` *does* specify `PREEMPT_RT`. Second, the
+KV260's RCU/timer cmdline parameters need `CONFIG_NO_HZ_FULL` (which selects
+`RCU_NOCB_CPU`); copying that cmdline to this kernel does nothing, silently.
 
-```sh
-cat /sys/module/rcutree/parameters/kthread_prio   # want 1
-chrt -p 12                                        # rcu_sched: want SCHED_FIFO
-```
+Under `PREEMPT_NONE` the kernel is never preempted and RCU grace periods advance
+only through quiescent states — context switch, userspace, or idle. A CPU inside
+a long non-preemptible section delays its own timer softirq, which is exactly the
+"Possible timer handling issue" the kernel reports. Jailhouse makes it acute:
+cell operations suspend and re-synchronise every root CPU at once.
 
-Measured effect: `fork8` took **10h54m** and never finished; `fork4` niced with
-RCU prioritised runs at 71 s/benchmark, i.e. **61 min**, the same as an idle
-baseline. Per-iteration cost is 2.3 s stressed and 2.3 s unstressed — the
-stressors no longer slow the harness at all.
+That predicts the observed split exactly:
 
-`nice` does not weaken the interference. Measured over 5 s with 4 memcpy workers,
-CPUs 0-2 were at 100% utilisation both niced (501/501/502 busy ticks) and
-un-niced (503/503/503). Three saturated cores is the ceiling either way, which is
-also why 4 workers interfere as much as 8.
+| configuration | stressor behaviour | result |
+|---|---|---|
+| `fork4`, `open4` | block on syscalls constantly, so quiescent states are plentiful | **52/52** |
+| `cpu4`, `udp4`, `memcpy4` | compute-bound, almost never yield | **all wedge** |
+
+#### What does *not* fix it
+
+Do not spend time here again — these were tried and measured:
+
+- **`rcutree.kthread_prio=1`, and `chrt -f -p 1` on `rcu_sched`.** Priority cannot
+  help a task sleeping on a timer that is not being delivered. `stressor.sh` still
+  does the `chrt` as a harmless fallback; it is not a fix.
+- **`nice -n 19` on the stressors.** Cannot make a non-preemptible kernel section
+  yield. (It is still correct on its own terms: measured over 5 s, CPUs 0-2 were
+  at 100% both niced — 501/501/502 busy ticks — and un-niced — 503/503/503 — so it
+  costs no interference. It is also why 4 workers interfere as much as 8.)
+- **Avoiding CPU hotplug.** Reusing the cell cut hotplugs from 1612 per
+  configuration to 1 and the board still wedged. Kept anyway, because it is free:
+  measured times are identical, ratio **1.0000**.
+- **Pausing the stressors around cell operations.** Got `cpu4` from 6/52 to 10/52.
+  Not sufficient.
+
+Controls that isolate it (2026-08-04) — the failure needs the hypervisor *and*
+the inmate *and* a saturating stressor:
+
+| | |
+|---|---|
+| stressor alone, no Jailhouse | survives 8 min, **42-44 °C** |
+| Jailhouse root cell + stressor, no inmate | survives 7 min |
+| inmate cycling, no stressor (`baseline`) | survives, 52/52 |
+| inmate cycling + stressor | **dies in ~4 min** |
+
+Thermal is ruled out: the `xilinx-ams` sensor reads ~44 °C under full load
+(`/sys/bus/iio/devices/iio:device0/in_temp8_input`, millidegrees).
+
+#### The fix, when someone does it
+
+Rebuild the kernel from `jailhouse_zcu104_isol_kernel_defconfig` (which already
+has `PREEMPT_RT`), ideally adding `CONFIG_HZ_1000` and `CONFIG_NO_HZ_FULL` to
+match the KV260 exactly, then boot with the KV260-style cmdline. That should also
+allow going back to **8 workers**, restoring comparability with the published
+KV260 columns.
 
 ### Backstops, if it wedges anyway
 
@@ -531,7 +579,15 @@ Quarantined directories deliberately do **not** end in `_raw`, so
 
 `baseline_raw` predates the harness changes and remains valid: it was collected
 with no stressor, and the bounded-operation and drop logic are no-ops when
-nothing hangs.
+nothing hangs. `fork4_raw` and `open4_raw` predate the switch to cell reuse,
+which is also safe to mix: reuse was measured to change the recorded times by
+nothing (ratio 1.0000 on both `adpcm_dec` and `mpeg2`).
+
+Partial data from the three blocked configurations is on the board
+(`cpu4_raw`, `udp4_raw`, `memcpy4_raw`) and is **valid as far as it goes** — each
+file that holds 31 iterations was measured under a live stressor, since
+`--require-pid` aborts rather than recording unstressed runs. It is simply
+incomplete.
 
 ## Gotchas
 

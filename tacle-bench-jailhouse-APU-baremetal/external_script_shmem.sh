@@ -49,6 +49,16 @@ POLL_INTERVAL=0.5                                     # mailbox polling period
 OP_TIMEOUT=60                                         # per jailhouse/sync operation
 BENCH_TIME_CAP=1200                                   # per benchmark; healthy is 1-5 min
 
+# Recreating the cell every iteration hotplugs CPU 3 out and back ~1612 times per
+# configuration, and CPU hotplug migrates timers between CPUs. That is where the
+# rcu_sched wakeup timer goes missing: the kernel reports "rcu_sched kthread
+# timer wakeup didn't happen" and "Possible timer handling issue on cpu=N", then
+# the board wedges. Reusing the cell -- load/start/shutdown, which `jailhouse`
+# supports as long as the cell *configuration* is unchanged -- touches the CPU
+# once per run instead of once per iteration. Set to "" to go back to
+# create/destroy for comparison.
+CELL_REUSE=1
+
 # jailhouse is not on the default PATH
 if [[ -r /etc/profile.d/jailhouse_path.sh ]]; then
     . /etc/profile.d/jailhouse_path.sh
@@ -150,6 +160,50 @@ run_bounded() {
     return $rc
 }
 
+# Jailhouse cell management suspends and re-synchronises every root-cell CPU via
+# IPIs. With all three root CPUs saturated by a stressor that synchronisation
+# wedges the board hard: no stall trace, no panic, just instant silence, ~4 min
+# into a run. Measured 2026-08-04: the board survives (a) the stressor alone with
+# no hypervisor, (b) the hypervisor plus stressor with no inmate, and (c) inmate
+# cycling with no stressor -- but not the combination.
+#
+# So the stressor is paused for the cell operations only, and resumed before
+# `cell start`. The measurement window -- from the inmate publishing start_time
+# to it reading end_time -- always runs with the stressor live, so the
+# interference being measured is unchanged.
+stress_pause() {
+    [[ -n "$REQUIRE_PID" ]] && pkill -STOP stress-ng 2>/dev/null
+    return 0
+}
+stress_resume() {
+    [[ -n "$REQUIRE_PID" ]] && pkill -CONT stress-ng 2>/dev/null
+    return 0
+}
+
+# Make the cell exist and be ready for `cell load`. With CELL_REUSE this is a
+# no-op after the first call.
+cell_prepare() {
+    if [[ -n "$CELL_REUSE" ]] && jailhouse cell list 2>/dev/null | grep -q "[[:space:]]${CELL_NAME}[[:space:]]"; then
+        return 0
+    fi
+    run_bounded $OP_TIMEOUT jailhouse cell create "$CELL_CONFIG"
+}
+
+# Stop the inmate between iterations without giving CPU 3 back to Linux.
+cell_stop() {
+    if [[ -n "$CELL_REUSE" ]]; then
+        run_bounded $OP_TIMEOUT jailhouse cell shutdown "$CELL_NAME"
+    else
+        run_bounded $OP_TIMEOUT jailhouse cell destroy "$CELL_NAME"
+    fi
+}
+
+# Something went wrong: tear the cell down completely so the next iteration
+# starts from a known state.
+cell_reset() {
+    run_bounded $OP_TIMEOUT jailhouse cell destroy "$CELL_NAME" >/dev/null 2>&1
+}
+
 # Poll the mailbox until it moves away from $1. Echoes the new value, or
 # nothing on timeout.
 wait_for_change() {
@@ -227,6 +281,7 @@ for BIN_FILE in ${BENCHMARKS[@]}; do
         if [[ -n "$REQUIRE_PID" ]] && ! kill -0 "$REQUIRE_PID" 2>/dev/null; then
             echo "ERROR: the stressor (PID $REQUIRE_PID) is no longer running." >&2
             echo "       Aborting so the remaining benchmarks are not recorded as stressed." >&2
+            stress_resume
             jailhouse cell destroy $CELL_NAME >/dev/null 2>&1
             exit 3
         fi
@@ -236,20 +291,26 @@ for BIN_FILE in ${BENCHMARKS[@]}; do
             continue
         fi
 
-        if ! run_bounded $OP_TIMEOUT jailhouse cell create "$CELL_CONFIG"; then
+        stress_pause
+        if ! cell_prepare; then
+            stress_resume
             echo "Error: Failed to create Jailhouse cell." >&2
+            cell_reset
             continue
         fi
 
         if ! run_bounded $OP_TIMEOUT jailhouse cell load $CELL_NAME $BIN_FILE_DIR/$BIN_FILE; then
             echo "Error: Failed to load binary into Jailhouse cell." >&2
-            run_bounded $OP_TIMEOUT jailhouse cell destroy $CELL_NAME
+            stress_resume
+            cell_reset
             continue
         fi
 
+        # stressor live again before the inmate starts timing
+        stress_resume
         if ! run_bounded $OP_TIMEOUT jailhouse cell start $CELL_NAME; then
             echo "Error: Failed to start Jailhouse cell." >&2
-            run_bounded $OP_TIMEOUT jailhouse cell destroy $CELL_NAME
+            cell_reset
             continue
         fi
 
@@ -257,7 +318,7 @@ for BIN_FILE in ${BENCHMARKS[@]}; do
         # the acknowledgement, so the wait below is not part of the measurement.
         if ! START_VALUE=$(wait_for_change "$INITIAL_VALUE"); then
             echo "Timeout while waiting for start value." >&2
-            run_bounded $OP_TIMEOUT jailhouse cell destroy $CELL_NAME
+            cell_reset
             TIMEOUT_COUNT=$((TIMEOUT_COUNT + 1))
             (( TIMEOUT_COUNT >= TIMEOUT_THRESHOLD )) && break
             continue
@@ -266,23 +327,25 @@ for BIN_FILE in ${BENCHMARKS[@]}; do
 
         if ! devmem $ADDRESS 32 $INTERMEDIATE_VALUE; then
             echo "Error: Failed to write intermediate value to memory." >&2
-            run_bounded $OP_TIMEOUT jailhouse cell destroy $CELL_NAME
+            cell_reset
             continue
         fi
 
         if ! END_VALUE=$(wait_for_change "$INTERMEDIATE_VALUE"); then
             echo "Timeout while waiting for end value." >&2
-            run_bounded $OP_TIMEOUT jailhouse cell destroy $CELL_NAME
+            cell_reset
             TIMEOUT_COUNT=$((TIMEOUT_COUNT + 1))
             (( TIMEOUT_COUNT >= TIMEOUT_THRESHOLD )) && break
             continue
         fi
         echo "Value changed! End value: $END_VALUE"
 
-        run_bounded $OP_TIMEOUT jailhouse cell destroy $CELL_NAME
+        stress_pause
+        cell_stop
 
         run_bounded $OP_TIMEOUT sync
         run_bounded $OP_TIMEOUT sh -c 'echo 3 > /proc/sys/vm/drop_caches'
+        stress_resume
         sleep 2
 
         echo "Iteration $ITER: Start value: $START_VALUE, End value: $END_VALUE" >> "$RESULT_FILE"
@@ -296,6 +359,11 @@ for BIN_FILE in ${BENCHMARKS[@]}; do
 
     echo "Benchmark $BIN_FILE completed. Results saved to $RESULT_FILE."
 done
+
+# Give CPU 3 back to Linux now that the run is over, and never leave a stopped
+# stressor behind.
+stress_resume
+cell_reset
 
 if [[ ${#FAILED_BENCHMARKS[@]} -gt 0 ]]; then
     echo "The following benchmarks failed due to excessive timeouts:"

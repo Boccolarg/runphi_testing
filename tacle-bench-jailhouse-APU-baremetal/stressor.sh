@@ -100,6 +100,14 @@ if [[ -e "$EDAC_DRV/edac" ]]; then
     fi
 fi
 
+# Elevate rcu_sched kthread priority to SCHED_FIFO 1 so RCU grace periods never get starved
+# during CPU hotplug / jailhouse cell operations.
+RCU_PID=$(ps | grep '[r]cu_sched' | awk 'NR==1{print $1}')
+if [[ -n "$RCU_PID" ]]; then
+    echo "Promoting rcu_sched (PID $RCU_PID) to SCHED_FIFO priority 1..."
+    chrt -f -p 1 "$RCU_PID" 2>/dev/null && echo "  promoted." || echo "  WARNING: failed to elevate rcu_sched priority." >&2
+fi
+
 # cpufreq resets on every boot and this kernel only has the userspace governor,
 # so /root/max_perf.sh must be run after each reboot, before any measurement.
 for c in 0 1 2 3; do
