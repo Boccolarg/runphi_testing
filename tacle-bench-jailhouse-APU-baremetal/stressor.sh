@@ -31,7 +31,12 @@
 CONFIGS=("baseline" "fork4" "memcpy4" "open4" "udp4" "cpu4")
 
 BENCH_SCRIPT="/root/taclebench/workdirs/APU_jailhouse/external_script_shmem.sh"
-RESULTS_DIR_BASE="/root/taclebench/results/APU_jailhouse/shmem"
+# Overridable so a campaign can be collected into a separate tree when something
+# about the system under test has changed and the old numbers must not be mixed
+# in -- e.g. the 2026-08-05 kernel change (PREEMPT, HZ=1000), which alters the
+# interference the root cell generates and so invalidates comparison with data
+# taken on the PREEMPT_NONE kernel.
+RESULTS_DIR_BASE="${RESULTS_DIR_BASE:-/root/taclebench/results/APU_jailhouse/shmem}"
 LOG_DIR="${RESULTS_DIR_BASE}/logs"
 WAIT_FOR_STABILIZATION=10
 
@@ -100,12 +105,43 @@ if [[ -e "$EDAC_DRV/edac" ]]; then
     fi
 fi
 
-# Elevate rcu_sched kthread priority to SCHED_FIFO 1 so RCU grace periods never get starved
-# during CPU hotplug / jailhouse cell operations.
-RCU_PID=$(ps | grep '[r]cu_sched' | awk 'NR==1{print $1}')
-if [[ -n "$RCU_PID" ]]; then
-    echo "Promoting rcu_sched (PID $RCU_PID) to SCHED_FIFO priority 1..."
-    chrt -f -p 1 "$RCU_PID" 2>/dev/null && echo "  promoted." || echo "  WARNING: failed to elevate rcu_sched priority." >&2
+# THE fix for the wedge that blocked cpu4/udp4/memcpy4 for a week. Read this
+# before removing it.
+#
+# Symptom: minutes into a run the board stops responding. The console shows the
+# RCU grace-period kthread stuck in TASK_WAKING (->state=0x200) for 84-336 s,
+# while "All QSes seen ... root ->qsmask 0x0" says no CPU is blocking the grace
+# period, and the CPU it last ran on answers a backtrace IPI from inside
+# el0t_64_irq -> __schedule. So: a live CPU, taking interrupts, running the
+# scheduler, next to a runnable nice-0 kthread it never picks.
+#
+# TASK_WAKING is held between ttwu_queue_wakelist() putting a task on a target
+# CPU's wake_list and that CPU draining the list when it takes the wakeup IPI.
+# Stuck there means the IPI never arrived. That is why none of the earlier
+# remedies worked -- preemption model, nice, chrt, rcutree.kthread_prio were all
+# aimed at CPU starvation, which was never the mechanism.
+#
+# NO_TTWU_QUEUE removes the path: wakeups enqueue directly on the target runqueue
+# under its lock, no wake_list and no IPI. Measured on 2026-08-05, cpu4, the
+# configuration that had never got past 11 benchmarks:
+#
+#   TTWU_QUEUE   -> wedged after 16 min / 11 benchmarks
+#   NO_TTWU_QUEUE-> 52/52 in 60 min, zero RCU stalls
+#
+# It is a debugfs setting, so it resets on every boot and must be reapplied here.
+# It needs CONFIG_SCHED_DEBUG=y, which the kernel was rebuilt with on 2026-08-05.
+SCHED_FEATURES=/sys/kernel/debug/sched/features
+mount -t debugfs none /sys/kernel/debug 2>/dev/null
+if [[ -w "$SCHED_FEATURES" ]]; then
+    echo NO_TTWU_QUEUE > "$SCHED_FEATURES" 2>/dev/null
+    if tr ' ' '\n' < "$SCHED_FEATURES" | grep -qx NO_TTWU_QUEUE; then
+        echo "TTWU_QUEUE disabled (remote-wakeup IPI path off) -- required, see comment."
+    else
+        echo "WARNING: could not disable TTWU_QUEUE. The board will wedge mid-run." >&2
+    fi
+else
+    echo "WARNING: $SCHED_FEATURES missing -- kernel lacks CONFIG_SCHED_DEBUG." >&2
+    echo "         Without NO_TTWU_QUEUE this run will wedge; rebuild the kernel." >&2
 fi
 
 # cpufreq resets on every boot and this kernel only has the userspace governor,

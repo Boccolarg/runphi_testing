@@ -15,13 +15,27 @@ Each benchmark runs 31 times per configuration, under six configurations:
 `baseline` (idle root cell) plus the `fork4`, `memcpy4`, `open4`, `udp4` and
 `cpu4` stressors. One configuration takes about an hour.
 
-> [!WARNING]
-> **Status: 3 of 6 configurations complete.** `baseline`, `fork4` and `open4` are
-> done at 52/52. `cpu4`, `udp4` and `memcpy4` cannot currently be completed: the
-> board wedges within minutes because this kernel was built `PREEMPT_NONE` while
-> the KV260 ran `PREEMPT_RT`. Diagnosis and the fix are in
-> [the deadlocks](#the-two-deadlocks--read-this-before-running); the kernel
-> rebuild has not been done.
+> [!IMPORTANT]
+> **The wedge is fixed, and the root cause is known (2026-08-06).** It was
+> **Jailhouse silently discarding guest wakeup IPIs** — not CPU starvation, and
+> nothing to do with the preemption model. Full write-up, with the evidence and
+> the hypervisor patch:
+> **[BUG_jailhouse_lost_sgi.md](BUG_jailhouse_lost_sgi.md)** (start with its
+> TL;DR).
+>
+> The Linux-side workaround, which must be reapplied after every boot:
+> ```sh
+> echo NO_TTWU_QUEUE > /sys/kernel/debug/sched/features
+> ```
+> `stressor.sh` does this itself; it needs `CONFIG_SCHED_DEBUG=y` (kernel rebuilt
+> 2026-08-05). With it, `cpu4` went from never passing 11/52 to **52/52**, and the
+> full six-configuration campaign ran **6h20m with zero RCU stalls**.
+>
+> **The preemption diagnosis further down is wrong** — kept only as a record of
+> the dead end. See
+> [What actually fixed it](#what-actually-fixed-it-no_ttwu_queue), which
+> supersedes section 2 of
+> [the deadlocks](#the-two-deadlocks--read-this-before-running).
 
 > [!IMPORTANT]
 > Two root-Linux behaviours will hang this board mid-campaign until they are
@@ -317,11 +331,133 @@ Thermal is ruled out: the `xilinx-ams` sensor reads ~44 °C under full load
 
 #### The fix, when someone does it
 
-Rebuild the kernel from `jailhouse_zcu104_isol_kernel_defconfig` (which already
-has `PREEMPT_RT`), ideally adding `CONFIG_HZ_1000` and `CONFIG_NO_HZ_FULL` to
-match the KV260 exactly, then boot with the KV260-style cmdline. That should also
-allow going back to **8 workers**, restoring comparability with the published
-KV260 columns.
+~~Rebuild the kernel from `jailhouse_zcu104_isol_kernel_defconfig` (which already
+has `PREEMPT_RT`)…~~ **This was done on 2026-08-05 and did not work.** See the
+next section.
+
+### What the 2026-08-05 rebuild proved
+
+The kernel was rebuilt with `CONFIG_PREEMPT=y`, `CONFIG_HZ_1000=y` and
+`CONFIG_NO_HZ_FULL=y`, and booted with
+`isolcpus=nohz,domain,managed_irq,3 nohz_full=3 rcu_nocbs=3 rcu_nocb_poll`.
+Verified live on the board via `/proc/config.gz`, with no unknown kernel command
+line parameters. **`cpu4` still wedges: three attempts, 20–45 seconds each.**
+
+Two corrections to the section above:
+
+- **`PREEMPT_RT` was never available.** In this tree it `depends on EXPERT &&
+  ARCH_SUPPORTS_RT`, and `ARCH_SUPPORTS_RT` only comes from
+  `custom_build/linux/patch/preempt_rt/0001-patch-6.1-rc7-rt5.patch`, which is not
+  applied. `CONFIG_PREEMPT_RT=y` in a defconfig is silently dropped. Resolving
+  `jailhouse_zcu104_isol_kernel_defconfig` through Kconfig yields
+  `CONFIG_PREEMPT_NONE=y`.
+- **The KV260 was therefore almost certainly not running `PREEMPT_RT` either.**
+  `jailhouse_kria_isolcpu_kernel_defconfig` resolves the same way. What kria
+  genuinely had was `HZ=1000` and `NO_HZ_FULL` — both now matched, and both
+  insufficient.
+
+The new traces say the mechanism was misidentified from the start:
+
+```
+rcu: All QSes seen, ... root ->qsmask 0x0
+rcu: rcu_preempt kthread timer wakeup didn't happen for 210479 jiffies! ->state=0x200
+rcu:   Possible timer handling issue on cpu=2
+```
+
+- **`All QSes seen`, `qsmask 0x0`** — every CPU has already reported a quiescent
+  state. Nothing is blocking the grace period, so this is *not* the stressors
+  starving RCU.
+- **`->state=0x200` is `TASK_WAKING`** (`include/linux/sched.h:98`). The grace
+  period kthread has been stuck mid-wakeup for 84–210 s. That state is normally
+  held for microseconds: it covers the gap between `ttwu_queue_wakelist()` putting
+  a task on a target CPU's wake_list and that CPU draining the list.
+- **The CPU it last ran on is healthy.** It answers the backtrace IPI and its
+  stack is `el0t_64_irq → el0_interrupt → do_notify_resume → __schedule` — taking
+  interrupts and preempting the stressor normally.
+
+A live CPU, servicing interrupts, running the scheduler, next to a runnable nice-0
+kthread it never picks — because the wakeup never completed. **This is a lost or
+never-drained wakeup, not a scheduling-priority problem.** That is why
+`CONFIG_PREEMPT` did not help, and why `nice`, `chrt` and `rcutree.kthread_prio`
+never helped either: every remedy tried so far was aimed at CPU starvation, which
+is not what is happening.
+
+Also measured, and worth knowing:
+
+- **The stressor pause is a mitigation, not the cause.** `pkill -CONT` is the only
+  mass cross-CPU wakeup in the loop and the KV260 harness had no pause at all, so
+  it was a plausible regression from this port. Running with `STRESS_PAUSE=`
+  wedged after **5** iterations instead of 15. Keep it on.
+- **The board often recovers.** One wedge cleared itself after ~115 s and resumed
+  cell operations. Earlier sessions power-cycled on the first ssh timeout, so some
+  "dead board" calls were probably premature. Wait ~4 minutes before pulling power.
+- **The remaining common factor is the Jailhouse cell operation itself** under
+  saturated root CPUs, which matches the isolation matrix above: hypervisor *and*
+  inmate *and* stressor are all required.
+
+### What actually fixed it: `NO_TTWU_QUEUE`
+
+The `TASK_WAKING` reading was right, and it pointed straight at the fix.
+
+`ttwu_queue_wakelist()` is the scheduler's *remote* wakeup path: instead of
+locking the target CPU's runqueue, the waker pushes the task onto that CPU's
+`wake_list` and sends a wakeup IPI; the target drains the list when it takes the
+IPI. `TASK_WAKING` is exactly the state a task holds while sitting on that list.
+Stuck there for 84–336 s means **the IPI never arrived**.
+
+`NO_TTWU_QUEUE` removes the path entirely — wakeups enqueue directly on the
+target runqueue under its lock, no `wake_list`, no IPI:
+
+```sh
+mount -t debugfs none /sys/kernel/debug        # not mounted at boot here
+echo NO_TTWU_QUEUE > /sys/kernel/debug/sched/features
+```
+
+Measured on `cpu4`, everything else identical:
+
+| | result |
+|---|---|
+| `TTWU_QUEUE` (default) | wedged after 16 min, 11/52 |
+| **`NO_TTWU_QUEUE`** | **52/52 in 60 min, 0 RCU stalls, 0 dropped** |
+
+Two things to know:
+
+- **It resets on every boot.** `stressor.sh` reapplies it and warns loudly if it
+  cannot; do not remove that block.
+- **It needs `CONFIG_SCHED_DEBUG=y`**, which is why the kernel was rebuilt on
+  2026-08-05 (`#6`). The option was explicitly disabled even though it is
+  `default y` and its dependencies were already met. Nothing else was changed:
+  `PREEMPT`, `HZ=1000`, `NO_HZ_FULL`, `RCU_NOCB_CPU` are as in `#5`. Board
+  rollback: `/boot/firmware/Image.pre-scheddebug.bak`.
+
+This is a workaround at the Linux end. **The actual fault is in Jailhouse and has
+since been found and fixed** — `gicv2_inject_irq()` matched in-flight SGIs on the
+interrupt ID alone, ignoring the sender, so a wakeup IPI from a second CPU was
+mistaken for a duplicate and discarded. Full account, evidence and patch:
+[BUG_jailhouse_lost_sgi.md](BUG_jailhouse_lost_sgi.md). The patch lives in
+`environment_builder` at
+`environment/zcu104/jailhouse/custom_build/jailhouse/patch/` and is applied via
+`JAILHOUSE_PATCH_ARGS`.
+
+With that patch, `NO_TTWU_QUEUE` is **no longer required** — the previously fatal
+configuration runs with zero dropped SGIs and zero stalls. `stressor.sh` still
+applies it, both as belt and braces and because the campaign data was collected
+with it.
+
+#### The other half: kernel parameters that made it worse
+
+Independently of the above, the boot cmdline introduced with the `#5` rebuild
+carried `nohz_full=3 rcu_nocbs=3 rcu_nocb_poll`. All three target CPU 3 — which
+belongs to **Jailhouse**, not Linux: the inmate runs there and Linux has it
+hotplugged out. So `nohz_full=3` governs Linux userspace that never runs,
+`rcu_nocbs=3` pushes CPU 3's RCU callbacks onto the housekeeping CPUs 0-2 that
+the experiment measures, and `rcu_nocb_poll` adds a permanently runnable kthread
+to those same three cores. Removing them took `cpu4` from 20-45 s to 16 minutes
+even before `NO_TTWU_QUEUE`. The working cmdline is:
+
+```
+isolcpus=domain,managed_irq,3 skew_tick=1 deferred_probe_timeout=1 earlycon clk_ignore_unused
+```
 
 ### Backstops, if it wedges anyway
 

@@ -171,12 +171,26 @@ run_bounded() {
 # `cell start`. The measurement window -- from the inmate publishing start_time
 # to it reading end_time -- always runs with the stressor live, so the
 # interference being measured is unchanged.
+#
+# 2026-08-05: suspected, then cleared. `pkill -CONT stress-ng` wakes every
+# stressor at once, a burst of cross-CPU wakeups through ttwu_queue_wakelist(),
+# and when the board wedges the rcu_preempt kthread is stuck in TASK_WAKING
+# (->state=0x200) -- exactly the state held between a task being put on a target
+# CPU's wake_list and that CPU draining it. The KV260 harness had no pause/resume
+# at all, so it was a plausible regression from this port.
+#
+# Measured with STRESS_PAUSE= (cpu4, same benchmarks, same kernel): the board
+# wedged after 5 iterations instead of 15. Pausing is a mitigation, not the
+# cause -- it keeps the root CPUs quiet across the cell operations, which is the
+# window that actually kills the board. Keep it on. The switch is retained only
+# so the comparison can be repeated.
+STRESS_PAUSE="${STRESS_PAUSE-1}"
 stress_pause() {
-    [[ -n "$REQUIRE_PID" ]] && pkill -STOP stress-ng 2>/dev/null
+    [[ -n "$REQUIRE_PID" && -n "$STRESS_PAUSE" ]] && pkill -STOP stress-ng 2>/dev/null
     return 0
 }
 stress_resume() {
-    [[ -n "$REQUIRE_PID" ]] && pkill -CONT stress-ng 2>/dev/null
+    [[ -n "$REQUIRE_PID" && -n "$STRESS_PAUSE" ]] && pkill -CONT stress-ng 2>/dev/null
     return 0
 }
 
@@ -361,8 +375,10 @@ for BIN_FILE in ${BENCHMARKS[@]}; do
 done
 
 # Give CPU 3 back to Linux now that the run is over, and never leave a stopped
-# stressor behind.
-stress_resume
+# stressor behind. Unconditional, unlike stress_resume(): if the run died between
+# a pause and a resume, or STRESS_PAUSE was turned off mid-campaign, the
+# stressors must still be running when we exit.
+pkill -CONT stress-ng 2>/dev/null
 cell_reset
 
 if [[ ${#FAILED_BENCHMARKS[@]} -gt 0 ]]; then
