@@ -1,0 +1,20 @@
+#!/bin/sh
+#
+# S99rtbench - start the runPHI-KVM/runc campaign orchestrator at boot
+# (/root/rtbench/bench/orchestrate.sh) while /root/rtbench/state/ENABLED
+# exists. Installed as /etc/init.d/S99rtbench.
+
+case "$1" in
+start)
+	if [ -f /root/rtbench/state/ENABLED ]; then
+		echo "Starting rtbench orchestrator"
+		setsid /root/rtbench/bench/orchestrate.sh </dev/null >/dev/null 2>&1 &
+	fi
+	;;
+stop | restart | reload) ;;
+*)
+	echo "Usage: $0 {start|stop}"
+	exit 1
+	;;
+esac
+exit 0

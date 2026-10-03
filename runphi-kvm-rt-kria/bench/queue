@@ -1,0 +1,26 @@
+# Campaign order: lifecycle first, then the cyclictest profiles, runc and
+# runPHI-KVM interleaved so that partial results are always paired.
+life_runc_cold
+life_runc_warm
+life_kvm_cold
+life_kvm_warm
+ffi_runc_baseline
+ffi_kvm_baseline
+ffi_runc_matrixprod
+ffi_kvm_matrixprod
+ffi_runc_callfunc
+ffi_kvm_callfunc
+ffi_runc_irq
+ffi_kvm_irq
+ffi_runc_memcpy
+ffi_kvm_memcpy
+ffi_runc_stream
+ffi_kvm_stream
+ffi_runc_tlb_shootdown
+ffi_kvm_tlb_shootdown
+ffi_runc_hdd_sync
+ffi_kvm_hdd_sync
+ffi_runc_io_uring
+ffi_kvm_io_uring
+ffi_runc_socket
+ffi_kvm_socket

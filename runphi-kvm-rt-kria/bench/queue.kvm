@@ -1,0 +1,15 @@
+# runPHI-KVM campaigns only, re-run with runPHI's emulator pinning
+# (runphi_manager: QEMU's non-vCPU threads kept off the SCHED_FIFO vCPU's
+# CPU). runc does not involve runPHI: its campaigns stay as measured.
+life_kvm_cold
+life_kvm_warm
+ffi_kvm_baseline
+ffi_kvm_matrixprod
+ffi_kvm_callfunc
+ffi_kvm_irq
+ffi_kvm_memcpy
+ffi_kvm_stream
+ffi_kvm_tlb_shootdown
+ffi_kvm_hdd_sync
+ffi_kvm_io_uring
+ffi_kvm_socket

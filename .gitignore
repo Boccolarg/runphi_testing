@@ -7,3 +7,6 @@
 tacle-bench-jailhouse-APU-baremetal/SESSION_STATE.md
 tacle-bench-jailhouse-APU-baremetal/HANDOFF_zcu104_verification.md
 tacle-bench-jailhouse-APU-baremetal/results_zcu104_ttwu/
+
+# runPHI-KVM vs runc on the KV260: raw results and generated figures, not part of the harness
+runphi-kvm-rt-kria/data/

@@ -1,0 +1,22 @@
+#!/bin/sh
+#
+# Guest side of the runPHI-KVM cyclictest campaign: the same sequence as the
+# runc container's rtbench.sh.
+#   RTBENCH READY  -> the harness starts the stressors on the host
+#   WARMUP seconds -> stressors reach steady state
+#   cyclictest     -> LOOPS x 1 ms on the guest's only vCPU (vCPU 0, pinned
+#                     by runPHI to the host's isolated CPU)
+# then powers off, which ends the container (QEMU exits, the watcher exits).
+# WARMUP and LOOPS are filled in by build_guest_image.sh.
+
+case "$1" in
+start) ;;
+*) exit 0 ;;
+esac
+
+echo "RTBENCH READY"
+sleep @WARMUP@
+cyclictest -p 99 -i 1000 -l @LOOPS@ -m -a 0 -q
+echo "RTBENCH END"
+sleep 1
+poweroff
