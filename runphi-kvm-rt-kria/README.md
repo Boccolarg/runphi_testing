@@ -21,6 +21,98 @@ The students' own scripts were not available, so the method is
 reconstructed from the paper and the slides. Every guess is listed in
 [Assumptions](#assumptions-reconstructed-from-the-paper).
 
+## Results
+
+Measured on 2026-10-02/03, with the setup below: 24 campaigns of 30 runs
+each. runc was measured once. runPHI-KVM was measured with runphi_manager
+`174a3c9`, which keeps QEMU's own threads off the vCPU's CPU (see
+[Teardown livelock](#teardown-livelock-of-runphi-kvm-guests-found-in-the-first-campaign)).
+
+The tables come from `analysis/analyze.py`. The raw data is not in the
+repository: it is on the workstation in `data/run-2026-10-03/` and on the
+board's SD card in `/root/rtbench`.
+
+### Lifecycle (mean of 30 runs, ms)
+
+| Runtime | Caches | Create | Start | Stop | RM | **Total** | Start → ready |
+|---|---|---|---|---|---|---|---|
+| runc | cold | 1317 | 1831 | 360 | 94 | **3602** | 58 |
+| runc | warm | 354 | 852 | 360 | 80 | **1647** | 55 |
+| runPHI-KVM | cold | 1273 | 11081 | 1676 | 95 | **14124** | 2214 |
+| runPHI-KVM | warm | 322 | 7545 | 1304 | 87 | **9258** | 2207 |
+
+Compared with the students' x86 PCs:
+
+- runc takes 1.6 s warm here, against 0.4–0.5 s there.
+- runPHI-KVM takes 9.3 s warm here, against 1.9–3.3 s there.
+- Most of runPHI's time is `docker start`, which creates the paused VM,
+  locks its 1 GB of RAM, sets up the cgroup and pinning, and resumes it:
+  7.5 s warm on the 1.33 GHz Cortex-A53. The paper's "start" phase does not
+  include the guest's boot. That boot is the last column: 2.2 s from
+  `docker start` returning to the guest's `RTBENCH READY`.
+
+### cyclictest on the isolated CPU 3 (µs)
+
+The table shows, per profile, the median over runs of each run's average
+latency, and the mean and worst over runs of each run's maximum latency.
+
+| Profile | runc avg | runc max mean | runc max worst | runPHI-KVM avg | runPHI-KVM max mean | runPHI-KVM max worst |
+|---|---|---|---|---|---|---|
+| baseline | 7 | 12.1 | 14 | 27 | 59.8 | 79 |
+| matrixprod | 7 | 15.4 | 18 | 31 | 81.4 | 113 |
+| callfunc | 7 | 12.1 | 15 | 27 | 59.7 | 81 |
+| irq (timer) | 7 | 12.0 | 13 | 28 | 62.1 | 84 |
+| memcpy | 7 | 12.3 | 16 | 27 | 57.8 | 85 |
+| stream | 47.5 | 75.8 | 101 | 210.5 | 296.1 | 348 |
+| tlb_shootdown | 18 | 59.8 | 77 | 125 | 354.0 | 445 |
+| hdd_sync | 7 | 12.6 | 22 | 27 | 72.7 | 104 |
+| io_uring | 7 | 12.5 | 14 | 28 | 79.4 | 110 |
+| socket (UDP) | 7 | 12.7 | 15 | 29 | 72.5 | 87 |
+
+- **runc is barely touched by CPU and I/O stress.** With the isolation
+  settings, it stays at 7 µs average and 12–15 µs mean maximum under every
+  CPU and I/O profile. CPU 3 takes about 1,120 interrupts/s in every
+  profile, essentially cyclictest's 1 kHz timer: the stressors on CPUs 0–2
+  do not reach it.
+- **runPHI-KVM pays a constant price for virtualization.** It adds about
+  20 µs to the average and about 45 µs to the maximum. Each timer expiry
+  goes through the host, which wakes the vCPU thread, then a full EL1/EL2
+  world switch (the A53 has no VHE), then the guest's own interrupt and
+  wakeup. CPU and I/O stress add little on top of that: 58–81 µs mean
+  maximum.
+- **Memory contention reaches both runtimes, and runPHI-KVM much more.**
+  `stream` and `tlb_shootdown` contend for hardware all four cores share:
+  the 1 MB L2 cache, the DRAM controller, and TLB maintenance, which arm64
+  broadcasts in hardware. runc reaches 76 and 60 µs mean maximum; runPHI-KVM
+  reaches 296 and 354 µs, with averages of 210 and 125 µs. Two-stage address
+  translation makes every TLB miss and invalidation in the guest more
+  expensive.
+- **On the KV260, runc beats runPHI-KVM in every profile.** The paper's
+  claim that runc "collapses" under synchronous I/O (714 µs spikes) is not
+  reproduced: runc's worst case under any I/O profile is 22 µs. The
+  students' own figures also show runc below runPHI-KVM in almost every
+  profile, and runPHI-KVM's worst case there (up to 117 µs) is in the same
+  range as here.
+
+### Effect of the runPHI fix (emulator pinning)
+
+Eight cyclictest profiles (all but `memcpy` and `hdd_sync`) and both
+lifecycle campaigns were also measured with the old runPHI (`5ced581`, in
+`results_runphi-5ced581/`). Old and new agree within run-to-run variation; for
+example, the baseline's mean maximum is 58.5 µs with the old runPHI and
+59.8 µs with the new one, and `stream`'s is 304.6 and 296.1 µs. The fix
+changes teardown, not latency. With the old runPHI, a guest powering off
+hung its container in 3 of 30 `matrixprod` runs, and had aborted 3
+campaigns in the first night. With the fix it never happened in 300 runs:
+`qemu_killed` was never needed.
+
+Reproduce the tables and figures with:
+
+```sh
+python3 analysis/analyze.py data/run-2026-10-03/results out \
+    --compare data/run-2026-10-03/results_runphi-5ced581 "old runPHI 5ced581"
+```
+
 ## Setup
 
 ### Board
