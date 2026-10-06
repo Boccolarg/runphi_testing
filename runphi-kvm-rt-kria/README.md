@@ -253,12 +253,39 @@ campaign's table:
 
   The effect lasts for the rest of the boot, and of the profiles measured
   it shows up only under `tlb_shootdown`: `stream`, the other memory
-  stressor, is unaffected. The guest leaves no process behind, nothing but
-  CPU 3's own kernel threads runs on CPU 3, and this kernel has no
-  transparent huge pages, so the mechanism is not identified. Something
-  that KVM leaves on the host makes TLB maintenance broadcast from CPUs 0–2
-  more expensive on CPU 3. In the first campaign every runc campaign ran in
+  stressor, is unaffected. In the first campaign every runc campaign ran in
   a boot without guests, so its runc numbers are not affected.
+
+  Four more variants of the probe narrow down the cause. Each ran on its
+  own fresh boot: 3 runc runs, the step in the first column, 3 more runc
+  runs, all runc runs under `tlb_shootdown` (`order_probe.py <variant>`,
+  campaigns `probe_*`):
+
+  | Between the runc runs | runc max, before → after | Samples > 60 µs |
+  |---|---|---|
+  | runPHI guest, no stress while it runs (`runphi`) | 63–93 → 167–179 µs | 2–43 → 434–561 |
+  | plain QEMU/KVM guest, without libvirt or runPHI, on CPU 3 (`qemu_cpu3`) | 56–64 → 163–186 µs | 0–4 → 426–638 |
+  | the same guest on CPU 2, so nothing of KVM runs on CPU 3 (`qemu_cpu2`) | 52–66 → 146–170 µs | 0–4 → 353–438 |
+  | plain QEMU/KVM VM created paused on CPU 3, its vCPU never runs (`qemu_paused`) | 55–64 → 56–72 µs | 0–1 → 0–1 |
+
+  - **It is KVM, not runPHI or libvirt.** A plain QEMU guest does the same,
+    and the stress does not have to run while the guest does.
+  - **It is not a change to CPU 3.** A guest that only ever ran on CPU 2
+    slows runc on CPU 3 just as much.
+  - **Creating a VM is not enough.** A vCPU has to run, on any CPU.
+  - **CPU 3 does not get more work.** It takes the same interrupts before
+    and after, about 950/s (its timer, IRQ work and function-call IPIs).
+    No VM is left in KVM (debugfs), no process is left behind, and this
+    kernel has no transparent huge pages.
+
+  So what `tlb_shootdown` already does on CPUs 0–2 becomes about three
+  times more expensive for CPU 3 once any vCPU has run on the board. The
+  exact mechanism, in what KVM's first guest run sets up or in the
+  Cortex-A53 itself, is not identified. Hardware counters (TLB refills on
+  CPU 3) would be the next step, but `perf` is not installed on the board.
+  For runPHI-KVM, this is interference that outlives the guest: once a KVM
+  container has run, a plain container on the isolated CPU loses latency
+  under TLB-heavy load, until the next reboot.
 
 Still open, for the students:
 
@@ -499,7 +526,7 @@ bench/queue.kvm  the runPHI-KVM campaigns only (the re-run with emulator pinning
 bench/emulatorpin_check.sh  on-board check of runPHI's emulator pinning
 bench/m4.py      the students' own procedure (M4_SCRIPTS), campaigns m4_* -> results_m4/
 bench/queue.m4, bench/validate_m4.sh  its queue (their order) and quick validation
-bench/order_probe.py  runc under tlb_shootdown before and after a runPHI guest (M4 procedure)
+bench/order_probe.py  runc under tlb_shootdown before and after a guest (M4 procedure), variants probe_*
 images/runc/Dockerfile.m4, images/kvm/S99m4  its images: rt-cyclictest:runc, rt-cyclictest:runphi
 watchdog/rtbench_watchdog.sh   on the server: power-cycles a hung board, fetches the results
 ```
