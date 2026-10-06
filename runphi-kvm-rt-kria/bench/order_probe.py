@@ -13,10 +13,16 @@ again. The variants differ in what runs in between:
   qemu_cpu2    the same on CPU 2: nothing of KVM ever runs on CPU 3
   qemu_paused  plain QEMU/KVM started paused (-S) on CPU 3: the VM and its
                vCPU are created but never run; stopped after 5 s
+  qemu_nopmu   qemu_cpu3 without a virtual PMU (-cpu host,pmu=off)
+  qemu_tiny    plain QEMU/KVM on CPU 3 with bench/tiny_guest.S instead of
+               Linux: one line on the UART, then PSCI SYSTEM_OFF
   none         nothing (control)
 
 Each runc run also records the interrupts CPU 3 took, per source
-(/proc/interrupts). Results in /root/rtbench/probe_order/<variant>/. Run
+(/proc/interrupts), and, when /root/rtbench/bin/pmucount is installed
+(bench/pmucount.c), the PMU counts of every CPU, kernel and user: cycles,
+instructions, TLB refills, ... Results in
+/root/rtbench/probe_order/<variant>/. Run
 as a campaign of the queue, probe_<variant> (rtbench.py), so that each
 variant gets its own boot.
 """
@@ -37,7 +43,10 @@ OUT = os.path.join(rb.ROOT, "probe_order")
 QEMU = "/usr/bin/qemu-system-aarch64"
 KERNEL = "/root/guest/Image"
 INITRD = os.path.join(OUT, "rootfs-m4.cpio.gz")  # rt-cyclictest:runphi's, S99m4
-VARIANTS = ("runphi_tlb", "runphi", "qemu_cpu3", "qemu_cpu2", "qemu_paused", "none")
+TINY = os.path.join(rb.ROOT, "bin", "tiny_guest.elf")  # bench/tiny_guest.S
+PMUCOUNT = os.path.join(rb.ROOT, "bin", "pmucount")  # bench/pmucount.c
+VARIANTS = ("runphi_tlb", "runphi", "qemu_cpu3", "qemu_cpu2", "qemu_paused", "qemu_nopmu",
+            "qemu_tiny", "none")
 
 
 def cpu3_interrupts():
@@ -70,12 +79,26 @@ def histogram_over(rundir, us):
 
 def runc_step(variant, step, phase):
     rundir = os.path.join(OUT, variant, "step_%02d_runc" % step)
-    t0, before = time.time(), cpu3_interrupts()
-    rec = m4.ffi_run("runc", "tlb_shootdown", step, rundir, False)
-    dt, after = time.time() - t0, cpu3_interrupts()
+    pmu = None
+    if os.path.isfile(PMUCOUNT):
+        pmu = subprocess.Popen([PMUCOUNT], stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                               universal_newlines=True)
+        time.sleep(0.2)
+    try:
+        t0, before = time.time(), cpu3_interrupts()
+        rec = m4.ffi_run("runc", "tlb_shootdown", step, rundir, False)
+        dt, after = time.time() - t0, cpu3_interrupts()
+    finally:
+        if pmu is not None:
+            pmu.send_signal(signal.SIGTERM)
+            out, err = pmu.communicate(timeout=30)
     rate = {k: round((after[k] - before.get(k, 0)) / dt, 1) for k in after if after[k] != before.get(k, 0)}
     rec.update(step=step, phase=phase, samples_over_60us=histogram_over(rundir, 60),
                cpu3_irq_per_s=rate, cpu3_irq_total_per_s=round(sum(rate.values()), 1))
+    if pmu is not None:
+        if pmu.returncode != 0:
+            raise rb.RunError("pmucount exited %d: %s" % (pmu.returncode, err.strip()))
+        rec["pmu"] = json.loads(out)
     return rec
 
 
@@ -90,18 +113,23 @@ def extract_initrd():
     os.rename(INITRD + ".new", INITRD)
 
 
-def qemu_guest(cpu, paused, rundir):
+def qemu_guest(cpu, rundir, paused=False, pmu=True, tiny=False):
     """A plain QEMU/KVM guest, every thread on <cpu>: like libvirt's command
-    line for runPHI (bench/README), without libvirt."""
-    extract_initrd()
+    line for runPHI, without libvirt. The Linux guest runs cyclictest for
+    30 s and powers off; tiny_guest.elf powers off at once."""
     os.makedirs(rundir, exist_ok=True)
     log = os.path.join(rundir, "console.log")
-    cmd = [QEMU, "-machine", "virt,gic-version=host", "-accel", "kvm", "-cpu", "host",
+    if tiny:
+        boot = ["-kernel", TINY]
+    else:
+        extract_initrd()
+        boot = ["-kernel", KERNEL, "-initrd", INITRD, "-append", "console=ttyAMA0"]
+    cmd = [QEMU, "-machine", "virt,gic-version=host", "-accel", "kvm",
+           "-cpu", "host" if pmu else "host,pmu=off",
            "-m", "1024", "-overcommit", "mem-lock=on", "-smp", "1", "-display", "none",
-           "-nodefaults", "-no-user-config", "-kernel", KERNEL, "-initrd", INITRD,
-           "-append", "console=ttyAMA0", "-serial", "file:" + log, "-monitor", "none",
-           "-no-reboot"] + (["-S"] if paused else [])
-    rec = {"cpu": cpu, "paused": paused}
+           "-nodefaults", "-no-user-config"] + boot + [
+           "-serial", "file:" + log, "-monitor", "none", "-no-reboot"] + (["-S"] if paused else [])
+    rec = {"cpu": cpu, "paused": paused, "pmu": pmu, "tiny": tiny}
     t0 = rb.now()
     with open(os.path.join(rundir, "qemu.txt"), "w") as out:
         p = subprocess.Popen(cmd, stdout=out, stderr=subprocess.STDOUT,
@@ -116,7 +144,10 @@ def qemu_guest(cpu, paused, rundir):
             p.wait()
             raise rb.RunError("QEMU did not exit")
     rec["qemu_s"] = round(rb.now() - t0, 2)
-    if not paused:
+    if tiny:
+        if "TINY GUEST" not in rb.read_text(log) or rec["qemu_rc"] != 0:
+            raise rb.RunError("the tiny guest did not run (rc %s)" % rec["qemu_rc"])
+    elif not paused:
         text = rb.read_text(log)
         if "RTBENCH END" not in text:
             raise rb.RunError("the guest did not finish (no RTBENCH END)")
@@ -132,8 +163,9 @@ def disturb(variant, step):
     elif variant == "none":
         rec = {}
     else:
-        rec = qemu_guest(2 if variant == "qemu_cpu2" else int(rb.ISO_CPU),
-                         variant == "qemu_paused", rundir)
+        rec = qemu_guest(2 if variant == "qemu_cpu2" else int(rb.ISO_CPU), rundir,
+                         paused=variant == "qemu_paused", pmu=variant != "qemu_nopmu",
+                         tiny=variant == "qemu_tiny")
     if not os.path.isdir("/sys/kernel/debug/kvm"):
         subprocess.run(["mount", "-t", "debugfs", "none", "/sys/kernel/debug"])
     if os.path.isdir("/sys/kernel/debug/kvm"):  # VMs still known to KVM

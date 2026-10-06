@@ -272,20 +272,54 @@ campaign's table:
     and the stress does not have to run while the guest does.
   - **It is not a change to CPU 3.** A guest that only ever ran on CPU 2
     slows runc on CPU 3 just as much.
-  - **Creating a VM is not enough.** A vCPU has to run, on any CPU.
+  - **Creating a VM is not enough.** A guest has to run, on any CPU (and,
+    as the next probes show, it has to be more than a tiny one).
   - **CPU 3 does not get more work.** It takes the same interrupts before
     and after, about 950/s (its timer, IRQ work and function-call IPIs).
     No VM is left in KVM (debugfs), no process is left behind, and this
     kernel has no transparent huge pages.
 
   So what `tlb_shootdown` already does on CPUs 0–2 becomes about three
-  times more expensive for CPU 3 once any vCPU has run on the board. The
-  exact mechanism, in what KVM's first guest run sets up or in the
-  Cortex-A53 itself, is not identified. Hardware counters (TLB refills on
-  CPU 3) would be the next step, but `perf` is not installed on the board.
-  For runPHI-KVM, this is interference that outlives the guest: once a KVM
-  container has run, a plain container on the isolated CPU loses latency
-  under TLB-heavy load, until the next reboot.
+  times more expensive for CPU 3 once a guest has run on the board.
+
+  Three more variants look inside. In these, every runc run also counts
+  the PMU events of each CPU (`bench/pmucount.c`: the board has no `perf`):
+
+  | Between the runc runs | runc max, before → after | Samples > 60 µs |
+  |---|---|---|
+  | plain QEMU/KVM guest on CPU 3 again, with the counters (`qemu_cpu3`) | 64–79 → 100–180 µs | 1–22 → 473–642 |
+  | the same guest without a virtual PMU, `-cpu host,pmu=off` (`qemu_nopmu`) | 56–74 → 132–188 µs | 0–7 → 493–701 |
+  | a tiny guest that writes one line and powers off at once (`qemu_tiny`, `bench/tiny_guest.S`) | 65–90 → 60–83 µs | 1–23 → 0–20 |
+
+  CPU 3 during the runc runs (per second, mean of 3 runs, before → after):
+
+  | Guest | Cycles | Instructions | Cycles per instruction | L1D / L1I TLB refills | L2 refills | Exceptions | Load-miss stall cycles |
+  |---|---|---|---|---|---|---|---|
+  | `qemu_cpu3` | 65 → 110 M | 11.5 → 11.5 M | 5.7 → 9.6 | 755 / 269 → 803 / 312 | 135 k → 117 k | 1917 → 1923 | 5.3 → 7.8 M |
+  | `qemu_nopmu` | 59 → 114 M | 11.2 → 11.6 M | 5.3 → 9.8 | 763 / 278 → 951 / 319 | 116 k → 126 k | 1864 → 1947 | 5.7 → 8.2 M |
+  | `qemu_tiny` | 64 → 65 M | 11.5 → 11.6 M | 5.6 → 5.6 | 920 / 379 → 827 / 322 | 134 k → 125 k | 1917 → 1940 | 5.6 → 5.7 M |
+
+  - **It is not the virtual PMU.** The guest without one has the same
+    effect.
+  - **It is not KVM entering a guest.** The tiny guest goes through KVM's
+    whole first run (VMID, timer, vGIC, a world switch, PSCI) and leaves
+    nothing behind. Something the guest's Linux does while it runs causes
+    the change: its MMU and caches, its own TLB maintenance (broadcast,
+    with the guest's VMID), its use of memory, the vGIC and the timer, or
+    simply running for 40 s.
+  - **CPU 3 does the same work, only more slowly.** After a Linux guest, CPU
+    3 retires the same instructions and takes the same exceptions, with
+    about the same TLB and cache refills, but needs 75–90% more cycles
+    (CPI 5.5 → 9.7). The extra 45–55 M cycles/s are not load-miss stalls
+    (+2.5 M) and not TLB refills (+50 to +190/s). They match the core
+    stalling while it processes the TLB maintenance broadcast by CPUs 0–2,
+    which become slower to complete. CPUs 0–2 also retire 4–8% fewer
+    instructions after a Linux guest.
+
+  The exact mechanism, in KVM or in the Cortex-A53 and its interconnect,
+  is not identified. For runPHI-KVM, this is interference that outlives the
+  guest: once a KVM container has run, a plain container on the isolated
+  CPU loses latency under TLB-heavy load, until the next reboot.
 
 Still open, for the students:
 
@@ -527,6 +561,7 @@ bench/emulatorpin_check.sh  on-board check of runPHI's emulator pinning
 bench/m4.py      the students' own procedure (M4_SCRIPTS), campaigns m4_* -> results_m4/
 bench/queue.m4, bench/validate_m4.sh  its queue (their order) and quick validation
 bench/order_probe.py  runc under tlb_shootdown before and after a guest (M4 procedure), variants probe_*
+bench/pmucount.c, bench/tiny_guest.S  its PMU counter reader and its smallest guest (-> /root/rtbench/bin)
 images/runc/Dockerfile.m4, images/kvm/S99m4  its images: rt-cyclictest:runc, rt-cyclictest:runphi
 watchdog/rtbench_watchdog.sh   on the server: power-cycles a hung board, fetches the results
 ```
