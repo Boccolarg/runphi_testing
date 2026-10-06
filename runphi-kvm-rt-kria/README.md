@@ -17,20 +17,29 @@ There are two experiments:
 - **Lifecycle** (`life_*`). `docker create`, `start`, `stop` and `rm` are
   timed for both runtimes, with cold and warm caches. 30 runs each.
 
-The students' own scripts were not available, so the method is
-reconstructed from the paper and the slides. Every guess is listed in
-[Assumptions](#assumptions-reconstructed-from-the-paper).
+The campaign was run twice:
+
+- **First campaign.** The students' own scripts were not available yet, so its
+  method is reconstructed from the paper and the slides. Every guess is
+  listed in [Assumptions](#assumptions-reconstructed-from-the-paper).
+- **Second campaign.** When the scripts arrived, it repeated the campaign
+  following them step by step; see
+  [The students' own scripts](#the-students-own-scripts-m4_scripts).
 
 ## Results
 
-Measured on 2026-10-02/03, with the setup below: 24 campaigns of 30 runs
-each. runc was measured once. runPHI-KVM was measured with runphi_manager
-`174a3c9`, which keeps QEMU's own threads off the vCPU's CPU (see
+The first campaign was measured on 2026-10-02/03, with the setup below: 24
+campaigns of 30 runs each. runc was measured once. runPHI-KVM was measured
+with runphi_manager `174a3c9`, which keeps QEMU's own threads off the vCPU's
+CPU (see
 [Teardown livelock](#teardown-livelock-of-runphi-kvm-guests-found-in-the-first-campaign)).
+The second campaign, with the students' procedure, is
+[further down](#second-campaign-results).
 
 The tables come from `analysis/analyze.py`. The raw data is not in the
-repository: it is on the workstation in `data/run-2026-10-03/` and on the
-board's SD card in `/root/rtbench`.
+repository: it is on the workstation in `data/run-2026-10-03/` (first
+campaign) and `data/run-2026-10-06-m4/` (second), and on the board's SD card
+in `/root/rtbench` (`results/` and `results_m4/`).
 
 ### Lifecycle (mean of 30 runs, ms)
 
@@ -106,11 +115,171 @@ hung its container in 3 of 30 `matrixprod` runs, and had aborted 3
 campaigns in the first night. With the fix it never happened in 300 runs:
 `qemu_killed` was never needed.
 
+### The students' own scripts (M4_SCRIPTS)
+
+The students' scripts arrived after the campaign above, in
+`runphi_testing/M4_SCRIPTS`, from their PC1, the one with CPU 3 isolated:
+
+| Script | Role |
+|---|---|
+| `auto_test.sh` | runs one experiment per boot |
+| `prepare_host.sh` | applies the host settings |
+| `run_no_interference.sh` | steady state, no stress |
+| `run_{cpu,mem,io}_stress.sh` | the stress profiles |
+| `run_latency_start_stop.sh` | lifecycle |
+
+They answer most of the [assumptions](#assumptions-reconstructed-from-the-paper),
+and show that the paper describes some steps differently from what was run:
+
+| | Paper / slides | Their scripts | First campaign above |
+|---|---|---|---|
+| Warm-up before cyclictest | "30 s warm-up" | **none**: stress-ng and vmstat start, 2 s pause (1 s for steady), then `docker run`; cyclictest runs as soon as the container (or guest) is up | 30 s after `RTBENCH READY` |
+| Container start under stress | not stated | **yes**: it is inside the stressed window, 60 s of stress-ng in total | no |
+| cyclictest | `-p 99 -i 1000 -l 30000 -m -a <cpu> -q` | the same plus **`-h 1000`** (histogram; output is `# Min/Avg/Max Latencies:` instead of the `T:` line) | without `-h` |
+| runPHI guest | | runPHI does not run the container command, so the guest runs whatever its image (`rt-cyclictest:runphi`, not available) runs at boot; `docker wait` until it powers off | waits 30 s, then cyclictest |
+| matrixprod / callfunc / irq | | `--cpu 3 --cpu-method matrixprod/callfunc`, `--timer 3 --timer-freq 1000000` | the same |
+| memcpy | "1 GB memory copying" | `--memcpy 3 --vm-bytes 384M --vm-keep` (the `--vm-*` options do not apply to `--memcpy`: effectively `--memcpy 3`) | the same |
+| tlb_shootdown / stream / socket | | `--tlb-shootdown 3`, `--stream 3`, `--udp 3` | the same |
+| hdd_sync | paper: "random writes (256 MB) + sync()"; slides: O_DIRECT random reads | **`--hdd 3 --hdd-bytes 512M --hdd-opts direct,rd-rnd,noatime`** on `/var/tmp/stress_ssd` (disk) | `--hdd-bytes 256M --hdd-opts wr-rnd,fsync`: **different** |
+| io_uring | | **`--io-uring 3 --temp-path /tmp`**: tmpfs on the Arch PCs (1, 3), disk on Ubuntu (PC2) | SD card: **different** |
+| Stressor pinning | CPUs 0-2 | `taskset -c 0-2 stress-ng ...` | `--taskset 0-2` (the same) |
+| Order | | each iteration runs runc and then runPHI, in the same boot; one boot per profile | one boot per runtime and profile |
+| vmstat | 1 Hz | `vmstat -t 1` for the whole run, container start included | cyclictest window only |
+| Lifecycle | create/start/stop/rm | `docker create` (with the cyclictest command), `start`, **`sleep 1`**, `stop -t 10`, `rm`; cold: `sync` + `drop_caches` before each run; warm: no discarded first run; vmstat running; runc and runPHI alternate | READY + 2 s before stop, a discarded warm-up run |
+| Host settings | | `prepare_host.sh`: deep C-states off and frequency fixed on CPU 3, `sched_rt_runtime_us = -1`, `timer_migration = 0`, every IRQ's affinity to 0-2 at runtime | the same (the IRQ step added to `rt_tune.sh`) |
+
+The scripts work, with two weak points in how they check their own
+results:
+
+- **A failed run is recorded as zero.** If the runPHI serial log is
+  missing, the parser reads the QEMU log or nothing. It then records 0 for
+  Min/Avg/Max without an error.
+- **Nobody checks that the stress actually ran.** stress-ng's output and
+  exit status go to `/dev/null`, so a stressor that fails (as stress-ng
+  0.15's io_uring does on this board) leaves an unstressed run that looks
+  like a stressed one.
+
+`auto_test.sh` numbers its steps inconsistently (1/12, 2/9, ...), which is
+only cosmetic.
+
+**Second campaign: the students' procedure.** `bench/m4.py` performs the
+scripts' steps on the board. The scripts cannot run there unchanged: busybox
+has no `taskset`, `grep -P` or `date +%N`. The replica runs as campaigns
+`m4_*` (`bench/queue.m4`, their order, one per boot) and writes its results
+to `results_m4/`. It deviates from the scripts in three places:
+
+- **hdd_sync directory.** Their `hdd_sync` directory `/var/tmp/stress_ssd`
+  is on the PC's disk, but on the board `/var/tmp` is the tmpfs `/tmp`, so
+  the replica uses `/root/rtbench/stress_ssd` on the SD card. `io_uring`
+  uses `/tmp` as in the scripts, which is tmpfs on the board as on their
+  Arch PCs.
+- **Stress timeout.** Their stress-ng `--timeout 60s` assumes x86's 2 s
+  container start. runPHI needs 9–45 s to start a guest under stress on the
+  KV260, so the timeout is 180 s. stress-ng is still stopped after every
+  run, as theirs.
+- **runPHI guest.** The guest runs, at boot,
+  `cyclictest -p 99 -i 1000 -l 30000 -m -a 0 -q -h 1000` (`images/kvm/S99m4`;
+  `-a 0` is the guest's only vCPU), then powers off. That is an assumption:
+  their guest image is not available.
+
+`rt-cyclictest:runc` (`images/runc/Dockerfile.m4`) holds the same cyclictest
+binary as the first campaign, without the entrypoint.
+
+#### Second campaign results
+
+Measured on 2026-10-06: 12 campaigns, one per boot, each with 30 iterations
+of runc and then runPHI-KVM. All 600 cyclictest runs and 120 lifecycle runs
+completed, and the data checks passed:
+
+- no guest had to be killed (`qemu_killed`);
+- stress-ng was still running at the end of all 540 stressed runs;
+- their parse (the first `Min:` / `# Min Latencies:` match) agreed with the
+  histogram's summary in every run.
+
+Lifecycle (mean of 30 runs, ms):
+
+| Runtime | Caches | Create | Start | Stop | RM | **Total** | First campaign |
+|---|---|---|---|---|---|---|---|
+| runc | cold | 1377 | 1802 | 453 | 84 | **3716** | 3602 |
+| runc | warm | 370 | 897 | 410 | 88 | **1765** | 1647 |
+| runPHI-KVM | cold | 1324 | 11027 | 1669 | 90 | **14109** | 14124 |
+| runPHI-KVM | warm | 393 | 7592 | 1315 | 81 | **9382** | 9258 |
+
+The lifecycle times agree with the first campaign within 7%. Their
+procedure differs in three ways: it sleeps 1 s before stop, keeps vmstat
+running, and keeps the first warm run. None of these changes much.
+
+cyclictest on the isolated CPU 3 (µs), in the same form as the first
+campaign's table:
+
+| Profile | runc avg | runc max mean | runc max worst | runPHI-KVM avg | runPHI-KVM max mean | runPHI-KVM max worst |
+|---|---|---|---|---|---|---|
+| baseline | 7 | 11.8 | 17 | 28 | 65.3 | 89 |
+| matrixprod | 8 | 15.4 | 20 | 35 | 92.7 | 109 |
+| callfunc | 7 | 13.2 | 17 | 28 | 68.1 | 96 |
+| irq (timer) | 7 | 12.4 | 16 | 28 | 67.1 | 75 |
+| memcpy | 7 | 12.9 | 17 | 28 | 67.0 | 94 |
+| stream | 47 | 71.3 | 96 | 208 | 333.5 | 381 |
+| tlb_shootdown | 21 | 168.1 | 234 | 126 | 343.1 | 383 |
+| hdd_sync | 7 | 11.6 | 12 | 28 | 72.2 | 89 |
+| io_uring | 7 | 13.9 | 24 | 30 | 90.1 | 138 |
+| socket (UDP) | 7 | 13.2 | 21 | 29 | 78.7 | 105 |
+
+- **The first campaign's conclusions hold.** runc beats runPHI-KVM in every
+  profile. CPU and I/O stress barely reach runc: at most 15 µs mean maximum
+  and 24 µs worst case. Memory stress hurts runPHI-KVM the most.
+- **runc does not collapse under I/O with the students' own `hdd_sync`
+  either.** With their exact options (O_DIRECT random reads, 512 MB), runc's
+  worst case is 12 µs. The difference between paper and scripts therefore
+  does not explain the paper's 714 µs spikes, at least on this board.
+- **runPHI-KVM is a little higher in most profiles.** Its mean maximum is
+  5–11 µs higher in seven profiles and 37 µs higher in `stream`;
+  `tlb_shootdown` and `hdd_sync` are unchanged. The guest differs from the
+  first campaign in two ways: cyclictest starts as soon as the guest's init
+  reaches it instead of 30 s later, and it runs with `-h 1000`. Which of the
+  two matters was not measured.
+- **runc under `tlb_shootdown` is worse because of the alternating order.**
+  Its mean maximum is 168 µs, against 60 µs in the first campaign. The
+  first runc run of the boot, before any runPHI guest, reached 66 µs. Each
+  of runs 2–30 came after a runPHI guest in the same boot, and they reached
+  115–234 µs, with about 500 samples above 60 µs each.
+  `bench/order_probe.py` confirmed this on a fresh boot, with 5 runc runs,
+  1 runPHI run, then 5 runc runs, all under `tlb_shootdown`:
+
+  | | Max | Samples > 60 µs |
+  |---|---|---|
+  | runc before the guest | 56–68 µs | 0–4 |
+  | runc after the guest | 165–190 µs | 484–591 |
+
+  The effect lasts for the rest of the boot, and of the profiles measured
+  it shows up only under `tlb_shootdown`: `stream`, the other memory
+  stressor, is unaffected. The guest leaves no process behind, nothing but
+  CPU 3's own kernel threads runs on CPU 3, and this kernel has no
+  transparent huge pages, so the mechanism is not identified. Something
+  that KVM leaves on the host makes TLB maintenance broadcast from CPUs 0–2
+  more expensive on CPU 3. In the first campaign every runc campaign ran in
+  a boot without guests, so its runc numbers are not affected.
+
+Still open, for the students:
+
+- what their runPHI guest runs at boot (the exact cyclictest command, any
+  delay);
+- how their runc image got cyclictest onto Alpine;
+- their stress-ng and rt-tests versions;
+- how the vmstat files were averaged;
+- their raw data;
+- whether their runc results under memory stress change when runc runs in
+  a boot without runPHI guests (see the last point above).
+
 Reproduce the tables and figures with:
 
 ```sh
+# first campaign, with the comparison against the old runPHI
 python3 analysis/analyze.py data/run-2026-10-03/results out \
     --compare data/run-2026-10-03/results_runphi-5ced581 "old runPHI 5ced581"
+# second campaign, with the comparison against the first
+python3 analysis/analyze.py data/run-2026-10-06-m4/results_m4 out-m4 \
+    --compare data/run-2026-10-03/results "first campaign"
 ```
 
 ## Setup
@@ -305,7 +474,8 @@ runc campaigns were not repeated.
 | `results_partial/` | the first, aborted attempts at `ffi_kvm_{matrixprod,memcpy,hdd_sync}` with the old runPHI (7, 7 and 9 runs) |
 
 `analysis/analyze.py results out --compare results_runphi-5ced581 "before the
-fix"` adds a before/after comparison of runPHI-KVM.
+fix"` adds a before/after comparison (`comparison.png`), for each runtime
+measured in both directories.
 
 ### Data checks
 
@@ -327,6 +497,10 @@ bench/queue      the campaign order
 bench/validate.sh one short run of everything (results_quick/)
 bench/queue.kvm  the runPHI-KVM campaigns only (the re-run with emulator pinning)
 bench/emulatorpin_check.sh  on-board check of runPHI's emulator pinning
+bench/m4.py      the students' own procedure (M4_SCRIPTS), campaigns m4_* -> results_m4/
+bench/queue.m4, bench/validate_m4.sh  its queue (their order) and quick validation
+bench/order_probe.py  runc under tlb_shootdown before and after a runPHI guest (M4 procedure)
+images/runc/Dockerfile.m4, images/kvm/S99m4  its images: rt-cyclictest:runc, rt-cyclictest:runphi
 watchdog/rtbench_watchdog.sh   on the server: power-cycles a hung board, fetches the results
 ```
 
@@ -356,16 +530,27 @@ reboots, until the queue is empty. A campaign that stops halfway, for example
 because the watchdog power-cycled the board, continues from its last completed
 run.
 
+The second campaign (the students' procedure) runs the same way with
+`bench/queue.m4` as `queue`. Its images are built on the board, after
+`rtbench-runc:alpine`:
+
+```sh
+docker build -t rt-cyclictest:runc -f images/runc/Dockerfile.m4 images/runc
+images/kvm/build_guest_image.sh runphi 0 30000 S99m4 rt-cyclictest
+images/kvm/build_guest_image.sh runphi-quick 0 3000 S99m4 rt-cyclictest   # for validate_m4.sh
+```
+
 | | |
 |---|---|
 | Progress | `cat /root/rtbench/state/done`; `tail /root/rtbench/logs/orchestrate.log /root/rtbench/logs/<campaign>.log` |
 | Stop after the current campaign | `rm /root/rtbench/state/ENABLED` (the watchdog then exits too) |
 | Stop now | `rm /root/rtbench/state/ENABLED`, then `pkill -f orchestrate.sh; pkill -f rtbench.py`, then `python3 /root/rtbench/bench/rtbench.py check` and clean up the `rtb-*` containers |
-| Results | `/root/rtbench/results/<campaign>/runs.jsonl` and `run_NN/`; copied to `/root/rtbench-kv260` on the server when the queue finishes |
+| Results | `/root/rtbench/results/<campaign>/runs.jsonl` and `run_NN/` (`results_m4/` for the second campaign); copied to `/root/rtbench-kv260` on the server when the queue finishes |
 
 ## Assumptions (reconstructed from the paper)
 
-Points the paper and slides leave open, worth confirming with the students:
+Points the paper and slides leave open. Their scripts arrived later and
+answer all five (point 5: yes, runPHI got the same Docker options): see [The students' own scripts](#the-students-own-scripts-m4_scripts).
 
 1. **The exact stress-ng command lines.** The number of workers (here one
    per housekeeping CPU) and the options of each profile. In particular:

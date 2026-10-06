@@ -29,6 +29,12 @@ if [ "$1" != "--show" ]; then
 	done
 	echo -1 >/proc/sys/kernel/sched_rt_runtime_us
 	echo 0 >/proc/sys/kernel/timer_migration
+	# As the students' prepare_host.sh: every IRQ that accepts it to the
+	# housekeeping CPUs at runtime too (irqaffinity= only sets the default).
+	echo $HK >/proc/irq/default_smp_affinity_list 2>/dev/null
+	for f in /proc/irq/[0-9]*/smp_affinity_list; do
+		echo $HK >"$f" 2>/dev/null
+	done
 fi
 
 fail=0

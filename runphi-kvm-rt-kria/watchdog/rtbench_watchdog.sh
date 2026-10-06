@@ -36,7 +36,7 @@ board() {
 }
 fetch() {
 	mkdir -p "$DEST"
-	board 'tar -C /root/rtbench -cf - results logs state queue' | tar -C "$DEST" -xf - &&
+	board 'cd /root/rtbench && tar -cf - $(ls -d results results_m4 2>/dev/null) logs state queue' | tar -C "$DEST" -xf - &&
 		log "results copied to $DEST"
 }
 

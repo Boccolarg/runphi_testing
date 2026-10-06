@@ -619,6 +619,9 @@ def main():
         runs = 30
         if "--runs" in args:
             runs = int(args[args.index("--runs") + 1])
+        if args[1].startswith("m4_"):  # the students' own procedure, see m4.py
+            import m4
+            return m4.campaign(args[1], runs, "--quick" in args)
         return campaign(args[1], runs, "--quick" in args)
     raise SystemExit(__doc__)
 

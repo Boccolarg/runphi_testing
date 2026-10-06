@@ -11,9 +11,10 @@ per campaign, each with runs.jsonl). Writes to <out_dir>:
   cpu.png mem.png io.png   Figs. 4-6 and slides: Avg and Max latency per profile
   host_activity.png slides: context switches/s and interrupts/s (vmstat)
   summary.json      every number in the tables
-With --compare, the runPHI-KVM campaigns of another results directory (e.g.
-those measured before a runPHI change) are set against the ones of
-<results_dir>: kvm_comparison.png and a table in summary.md.
+With --compare, the campaigns of another results directory (e.g. those
+measured before a runPHI change, or with the other procedure) are set against
+the ones of <results_dir>, for each runtime measured in both: comparison.png
+and a table in summary.md.
 """
 
 import json
@@ -60,6 +61,23 @@ CT_LINE = re.compile(r"T:\s*0\s*\(\s*\d+\)\s*P:\s*\d+\s*I:\s*\d+\s*C:\s*(\d+)\s*
                      r"Min:\s*(\d+)\s*Act:\s*(\d+)\s*Avg:\s*(\d+)\s*Max:\s*(\d+)[ \t]*\r?\n")
 
 
+# cyclictest -h (the students' procedure, bench/m4.py): no T: line, but the
+# histogram's own summary.
+HIST = {k: re.compile(r"# %s:\s*(\d+)" % label) for k, label in (
+    ("cycles", "Total"), ("min_us", "Min Latencies"), ("avg_us", "Avg Latencies"), ("max_us", "Max Latencies"))}
+
+
+def console_values(text):
+    lines = list(CT_LINE.finditer(text))
+    if lines:
+        return dict(zip(("cycles", "min_us", "act_us", "avg_us", "max_us"),
+                        (int(v) for v in lines[-1].groups())))
+    vals = {k: rx.search(text) for k, rx in HIST.items()}
+    if all(vals.values()):
+        return {k: int(m.group(1)) for k, m in vals.items()}
+    return None
+
+
 def load(results, notes):
     """runs.jsonl of every campaign. For cyclictest runs, the numbers are
     checked against the complete summary line in run_NN/console.log, the raw
@@ -77,12 +95,10 @@ def load(results, notes):
             if not os.path.isfile(con):
                 continue
             with open(con, errors="replace") as f:
-                lines = list(CT_LINE.finditer(f.read()))
-            if not lines:
-                notes.append("%s run %d: no complete cyclictest line in console.log" % (name, r["run"]))
+                vals = console_values(f.read())
+            if not vals:
+                notes.append("%s run %d: no complete cyclictest summary in console.log" % (name, r["run"]))
                 continue
-            vals = dict(zip(("cycles", "min_us", "act_us", "avg_us", "max_us"),
-                            (int(v) for v in lines[-1].groups())))
             diff = {k: (r.get(k), v) for k, v in vals.items() if r.get(k) != v}
             if diff:
                 notes.append("%s run %d: corrected from console.log: %s" % (
@@ -133,7 +149,8 @@ def lifecycle(data, out, md, js):
             runs = data.get("life_%s_%s" % (rt, mode))
             if not runs:
                 continue
-            s = {p: stats([r[p] for r in runs]) for p in phases + ["total_ms", "ready_ms"]}
+            s = {p: stats([r[p] for r in runs if r.get(p) is not None])
+                 for p in phases + ["total_ms", "ready_ms"]}
             js["life_%s_%s" % (rt, mode)] = s
             rows.append((rt, mode, s))
             bars.append(("%s\n(%s)" % ("runc" if rt == "runc" else "runPHI-KVM", mode), s))
@@ -142,11 +159,12 @@ def lifecycle(data, out, md, js):
     md.append("## Lifecycle (Table II), mean over runs, ms\n")
     md.append("| Runtime | Caches | n | Create | Start | Stop | RM | **Total** | Start→ready (extra) |")
     md.append("|---|---|---|---|---|---|---|---|---|")
-    for rt, mode, s in rows:
-        md.append("| %s | %s | %d | %.1f | %.1f | %.1f | %.1f | **%.1f** | %.1f |" % (
+    for rt, mode, s in rows:  # no start→ready in the students' procedure (bench/m4.py)
+        md.append("| %s | %s | %d | %.1f | %.1f | %.1f | %.1f | **%.1f** | %s |" % (
             "runc" if rt == "runc" else "runPHI-KVM", mode, s["total_ms"]["n"],
             s["create_ms"]["mean"], s["start_ms"]["mean"], s["stop_ms"]["mean"],
-            s["rm_ms"]["mean"], s["total_ms"]["mean"], s["ready_ms"]["mean"]))
+            s["rm_ms"]["mean"], s["total_ms"]["mean"],
+            "%.1f" % s["ready_ms"]["mean"] if s["ready_ms"] else "-"))
     md.append("")
     md.append("Standard deviations (ms): " + "; ".join(
         "%s %s total %.1f, start %.1f" % (rt, mode, s["total_ms"]["stdev"], s["start_ms"]["stdev"])
@@ -180,8 +198,11 @@ def ffi_runs(data, rt, profile):
 
 def ffi_tables(data, md, js):
     md.append("## cyclictest (µs) per profile\n")
+    windows = {r["vmstat"].get("window", "cyclictest window") for k, v in data.items() if k.startswith("ffi_")
+               for r in v if r.get("vmstat")} or {"cyclictest window"}
     md.append("Min and Avg: median over runs. Max: mean, median and worst over runs. "
-              "Host vmstat (mean over the cyclictest window) and interrupts/s on the isolated CPU 3.\n")
+              "Host vmstat (mean over the %s) and interrupts/s on the isolated CPU 3.\n"
+              % " / ".join(sorted(windows)))
     md.append("| Profile | Runtime | n | Min | Avg | Max mean | Max median | Max worst | cs/s | in/s | CPU3 irq/s |")
     md.append("|---|---|---|---|---|---|---|---|---|---|---|")
     for profile in ["baseline"] + [p for g in GROUPS.values() for p, _ in g]:
@@ -260,45 +281,54 @@ def host_activity_fig(data, out):
     plt.close(fig)
 
 
-COMPARE_COLOR = "#1baf7a"  # categorical slot 3, next to runPHI-KVM's slot 2
+COMPARE_COLOR = "#1baf7a"  # categorical slot 3, next to the runtimes' slots 1-2
 
 
-def compare_kvm(data, other, label, out, md):
+def compare_runs(data, other, label, out, md):
+    """Each runtime measured both here and in <other>: a table, and a
+    figure with one panel per runtime (max latency per profile)."""
     profiles = ["baseline"] + [p for g in GROUPS.values() for p, _ in g]
-    profiles = [p for p in profiles if ffi_runs(data, "kvm", p) or ffi_runs(other, "kvm", p)]
-    if not profiles:
+    both = [(rt, name) for rt, name in RUNTIMES
+            if any(ffi_runs(data, rt, p) for p in profiles) and any(ffi_runs(other, rt, p) for p in profiles)]
+    if not both:
         return
-    md.append("## runPHI-KVM: %s vs this runPHI (µs)\n" % label)
-    md.append("| Profile | n (%s / now) | Avg median | Max mean | Max worst |" % label)
-    md.append("|---|---|---|---|---|")
+    md.append("## %s vs this run (µs)\n" % label)
+    md.append("| Profile | Runtime | n (%s / now) | Avg median | Max mean | Max worst |" % label)
+    md.append("|---|---|---|---|---|---|")
+    f = lambda runs, k, fn: ("%.1f" % fn([r[k] for r in runs])) if runs else "-"
     for p in profiles:
-        a, b = ffi_runs(other, "kvm", p), ffi_runs(data, "kvm", p)
-        f = lambda runs, k, fn: ("%.1f" % fn([r[k] for r in runs])) if runs else "-"
-        md.append("| %s | %d / %d | %s / %s | %s / %s | %s / %s |" % (
-            p, len(a), len(b), f(a, "avg_us", st.median), f(b, "avg_us", st.median),
-            f(a, "max_us", st.mean), f(b, "max_us", st.mean), f(a, "max_us", max), f(b, "max_us", max)))
+        for rt, _ in both:
+            a, b = ffi_runs(other, rt, p), ffi_runs(data, rt, p)
+            if not a and not b:
+                continue
+            md.append("| %s | %s | %d / %d | %s / %s | %s / %s | %s / %s |" % (
+                p, "runc" if rt == "runc" else "runPHI-KVM", len(a), len(b),
+                f(a, "avg_us", st.median), f(b, "avg_us", st.median),
+                f(a, "max_us", st.mean), f(b, "max_us", st.mean), f(a, "max_us", max), f(b, "max_us", max)))
     md.append("")
 
     from matplotlib.patches import Patch
-    fig, ax = plt.subplots(figsize=(10, 4.2))
+    fig, axes = plt.subplots(len(both), 1, figsize=(10, 4.2 * len(both)), sharex=True, squeeze=False)
     width, gap = 0.34, 0.04
-    for k, (runs_of, color) in enumerate(((other, COMPARE_COLOR), (data, COLOR["kvm"]))):
-        pos = [i + (k - 0.5) * (width + gap) for i in range(len(profiles))]
-        vals = [[r["max_us"] for r in ffi_runs(runs_of, "kvm", p)] or [float("nan")] for p in profiles]
-        ax.boxplot(vals, positions=pos, widths=width, patch_artist=True,
-                   boxprops=dict(facecolor=color, edgecolor=color, alpha=0.9),
-                   medianprops=dict(color=INK, linewidth=1.2),
-                   whiskerprops=dict(color=color), capprops=dict(color=color),
-                   flierprops=dict(marker="o", markersize=4, markerfacecolor="none", markeredgecolor=color))
-    ax.set_xticks(range(len(profiles)))
-    ax.set_xticklabels([PROFILE_LABEL[p] for p in profiles], rotation=20, ha="right")
-    ax.set_ylabel("Max latency (µs)")
-    ax.set_ylim(bottom=0)
-    ax.legend(handles=[Patch(facecolor=COMPARE_COLOR, label="runPHI-KVM, " + label),
-                       Patch(facecolor=COLOR["kvm"], label="runPHI-KVM, this run")], loc="upper left")
-    ax.set_title("runPHI-KVM maximum cyclictest latency per profile")
+    for ax, (rt, name) in zip(axes[:, 0], both):
+        for k, (runs_of, color) in enumerate(((other, COMPARE_COLOR), (data, COLOR[rt]))):
+            pos = [i + (k - 0.5) * (width + gap) for i in range(len(profiles))]
+            vals = [[r["max_us"] for r in ffi_runs(runs_of, rt, p)] or [float("nan")] for p in profiles]
+            ax.boxplot(vals, positions=pos, widths=width, patch_artist=True,
+                       boxprops=dict(facecolor=color, edgecolor=color, alpha=0.9),
+                       medianprops=dict(color=INK, linewidth=1.2),
+                       whiskerprops=dict(color=color), capprops=dict(color=color),
+                       flierprops=dict(marker="o", markersize=4, markerfacecolor="none", markeredgecolor=color))
+        ax.set_ylabel("Max latency (µs)")
+        ax.set_ylim(bottom=0)
+        short = "runc" if rt == "runc" else "runPHI-KVM"
+        ax.legend(handles=[Patch(facecolor=COMPARE_COLOR, label="%s, %s" % (short, label)),
+                           Patch(facecolor=COLOR[rt], label="%s, this run" % short)], loc="upper left")
+        ax.set_title("%s: maximum cyclictest latency per profile" % name)
+    axes[-1, 0].set_xticks(range(len(profiles)))
+    axes[-1, 0].set_xticklabels([PROFILE_LABEL[p] for p in profiles], rotation=20, ha="right")
     fig.tight_layout()
-    fig.savefig(os.path.join(out, "kvm_comparison.png"), dpi=160)
+    fig.savefig(os.path.join(out, "comparison.png"), dpi=160)
     plt.close(fig)
 
 
@@ -331,7 +361,7 @@ def main():
         cnotes = []
         other = load(compare[0], cnotes)
         md.extend("- %s: %s" % (compare[1], n) for n in cnotes)
-        compare_kvm(data, other, compare[1], out, md)
+        compare_runs(data, other, compare[1], out, md)
     with open(os.path.join(out, "summary.md"), "w") as f:
         f.write("\n".join(md) + "\n")
     with open(os.path.join(out, "summary.json"), "w") as f:

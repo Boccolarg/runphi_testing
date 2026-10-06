@@ -1,0 +1,19 @@
+#!/bin/sh
+#
+# Guest side of the students' own procedure (bench/m4.py, M4_SCRIPTS):
+# runPHI does not run the container's command, so the guest runs cyclictest
+# by itself as soon as it has booted, with the scripts' parameters, and
+# powers off; the harness waits for the container to end (docker wait) and
+# reads the result from the serial log. -a 0: the guest's only vCPU, which
+# runPHI pins to the host's isolated CPU 3 (the scripts' -a 3 cannot apply
+# inside a 1-vCPU guest). LOOPS is filled in by build_guest_image.sh.
+
+case "$1" in
+start) ;;
+*) exit 0 ;;
+esac
+
+cyclictest -p 99 -i 1000 -l @LOOPS@ -m -a 0 -q -h 1000
+echo "RTBENCH END"
+sleep 1
+poweroff

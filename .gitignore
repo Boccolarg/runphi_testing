@@ -10,3 +10,4 @@ tacle-bench-jailhouse-APU-baremetal/results_zcu104_ttwu/
 
 # runPHI-KVM vs runc on the KV260: raw results and generated figures, not part of the harness
 runphi-kvm-rt-kria/data/
+runphi-kvm-rt-kria/SESSION_STATE.md
