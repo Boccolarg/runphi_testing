@@ -16,6 +16,21 @@ again. The variants differ in what runs in between:
   qemu_nopmu   qemu_cpu3 without a virtual PMU (-cpu host,pmu=off)
   qemu_tiny    plain QEMU/KVM on CPU 3 with bench/tiny_guest.S instead of
                Linux: one line on the UART, then PSCI SYSTEM_OFF
+  qemu_tiny_spin, qemu_tiny_touch, qemu_tiny_mmu_spin, qemu_tiny_mmu_tlbi
+               the same with the tiny guest's other modes: spin 40 s with
+               the MMU off; write to every page of the guest RAM; MMU and
+               caches on, then spin 40 s; MMU on, then 40 s of TLB
+               invalidations by VA, broadcast (see tiny_guest.S)
+  qemu_tiny_tlbi_only, qemu_tiny_mmu_noflush, qemu_tiny_mmu_nocache
+               the guest's one TLBI VMALLE1 before turning the MMU on,
+               without the MMU; MMU and caches on without that TLBI; MMU
+               on with the caches off
+  rollover     qemu_cpu3, 3 runc runs, then 300 tiny guests (64 MB each)
+               to use up the A53's 8-bit VMIDs, so that KVM flushes the TLBs
+               of every VMID on every core (__kvm_flush_vm_context), then 3
+               more runc runs: does the slowdown survive that flush?
+  few_guests   the same with 100 tiny guests, too few for a VMID rollover
+               (control: is it the flush, or just running other guests?)
   none         nothing (control)
 
 Each runc run also records the interrupts CPU 3 took, per source
@@ -43,10 +58,15 @@ OUT = os.path.join(rb.ROOT, "probe_order")
 QEMU = "/usr/bin/qemu-system-aarch64"
 KERNEL = "/root/guest/Image"
 INITRD = os.path.join(OUT, "rootfs-m4.cpio.gz")  # rt-cyclictest:runphi's, S99m4
-TINY = os.path.join(rb.ROOT, "bin", "tiny_guest.elf")  # bench/tiny_guest.S
+TINY = {  # bench/tiny_guest.S, by MODE
+    "qemu_tiny": "tiny_guest.elf", "qemu_tiny_spin": "tiny_spin.elf", "qemu_tiny_touch": "tiny_touch.elf",
+    "qemu_tiny_mmu_spin": "tiny_mmu_spin.elf", "qemu_tiny_mmu_tlbi": "tiny_mmu_tlbi.elf",
+    "qemu_tiny_tlbi_only": "tiny_tlbi_only.elf", "qemu_tiny_mmu_noflush": "tiny_mmu_noflush.elf",
+    "qemu_tiny_mmu_nocache": "tiny_mmu_nocache.elf"}
 PMUCOUNT = os.path.join(rb.ROOT, "bin", "pmucount")  # bench/pmucount.c
 VARIANTS = ("runphi_tlb", "runphi", "qemu_cpu3", "qemu_cpu2", "qemu_paused", "qemu_nopmu",
-            "qemu_tiny", "none")
+            "rollover", "few_guests", "none") + tuple(TINY)
+ROLLOVER = {"rollover": 300, "few_guests": 100}  # tiny guests after the Linux one
 
 
 def cpu3_interrupts():
@@ -113,20 +133,21 @@ def extract_initrd():
     os.rename(INITRD + ".new", INITRD)
 
 
-def qemu_guest(cpu, rundir, paused=False, pmu=True, tiny=False):
+def qemu_guest(cpu, rundir, paused=False, pmu=True, tiny=None, small=False):
     """A plain QEMU/KVM guest, every thread on <cpu>: like libvirt's command
     line for runPHI, without libvirt. The Linux guest runs cyclictest for
-    30 s and powers off; tiny_guest.elf powers off at once."""
+    30 s and powers off; <tiny>, one of the tiny_guest.S builds, does its
+    one thing and powers off."""
     os.makedirs(rundir, exist_ok=True)
     log = os.path.join(rundir, "console.log")
     if tiny:
-        boot = ["-kernel", TINY]
+        boot = ["-kernel", os.path.join(rb.ROOT, "bin", tiny)]
     else:
         extract_initrd()
         boot = ["-kernel", KERNEL, "-initrd", INITRD, "-append", "console=ttyAMA0"]
+    mem = ["-m", "64"] if small else ["-m", "1024", "-overcommit", "mem-lock=on"]
     cmd = [QEMU, "-machine", "virt,gic-version=host", "-accel", "kvm",
-           "-cpu", "host" if pmu else "host,pmu=off",
-           "-m", "1024", "-overcommit", "mem-lock=on", "-smp", "1", "-display", "none",
+           "-cpu", "host" if pmu else "host,pmu=off"] + mem + ["-smp", "1", "-display", "none",
            "-nodefaults", "-no-user-config"] + boot + [
            "-serial", "file:" + log, "-monitor", "none", "-no-reboot"] + (["-S"] if paused else [])
     rec = {"cpu": cpu, "paused": paused, "pmu": pmu, "tiny": tiny}
@@ -145,8 +166,10 @@ def qemu_guest(cpu, rundir, paused=False, pmu=True, tiny=False):
             raise rb.RunError("QEMU did not exit")
     rec["qemu_s"] = round(rb.now() - t0, 2)
     if tiny:
-        if "TINY GUEST" not in rb.read_text(log) or rec["qemu_rc"] != 0:
-            raise rb.RunError("the tiny guest did not run (rc %s)" % rec["qemu_rc"])
+        text = rb.read_text(log)
+        done = "TINY GUEST" in text and ("TINY END" in text or tiny == "tiny_guest.elf")
+        if not done or "FAULT" in text or rec["qemu_rc"] != 0:
+            raise rb.RunError("the tiny guest %s did not finish (rc %s): %r" % (tiny, rec["qemu_rc"], text[-200:]))
     elif not paused:
         text = rb.read_text(log)
         if "RTBENCH END" not in text:
@@ -155,23 +178,37 @@ def qemu_guest(cpu, rundir, paused=False, pmu=True, tiny=False):
     return rec
 
 
-def disturb(variant, step):
-    rundir = os.path.join(OUT, variant, "step_%02d_%s" % (step, variant))
-    if variant in ("runphi_tlb", "runphi"):
+def vmid_rollover(rundir, count=300):
+    """<count> tiny guests in a row: more VMs than the 255 VMIDs, so KVM's
+    VMID allocator rolls over and flushes all VMIDs' TLB entries."""
+    t0, rcs = rb.now(), []
+    for i in range(count):
+        rec = qemu_guest(int(rb.ISO_CPU), rundir, tiny=TINY["qemu_tiny"], small=True)
+        rcs.append(rec["qemu_rc"])
+    return {"guests": count, "all_rc_0": all(rc == 0 for rc in rcs), "rollover_s": round(rb.now() - t0, 1)}
+
+
+def disturb(variant, step, phase="guest"):
+    rundir = os.path.join(OUT, variant, "step_%02d_%s" % (step, phase if phase != "guest" else variant))
+    if phase == "rollover":
+        rec = vmid_rollover(rundir, ROLLOVER[variant])
+    elif variant in ("runphi_tlb", "runphi"):
         rec = m4.ffi_run("kvm", "tlb_shootdown" if variant == "runphi_tlb" else "baseline",
                          step, rundir, False)
     elif variant == "none":
         rec = {}
+    elif variant in ROLLOVER:
+        rec = qemu_guest(int(rb.ISO_CPU), rundir)
     else:
         rec = qemu_guest(2 if variant == "qemu_cpu2" else int(rb.ISO_CPU), rundir,
                          paused=variant == "qemu_paused", pmu=variant != "qemu_nopmu",
-                         tiny=variant == "qemu_tiny")
+                         tiny=TINY.get(variant))
     if not os.path.isdir("/sys/kernel/debug/kvm"):
         subprocess.run(["mount", "-t", "debugfs", "none", "/sys/kernel/debug"])
     if os.path.isdir("/sys/kernel/debug/kvm"):  # VMs still known to KVM
         rec["kvm_debugfs_vms"] = [d for d in os.listdir("/sys/kernel/debug/kvm")
                                   if os.path.isdir(os.path.join("/sys/kernel/debug/kvm", d))]
-    rec.update(step=step, phase="guest", what=variant)
+    rec.update(step=step, phase=phase, what=variant)
     return rec
 
 
@@ -183,13 +220,20 @@ def campaign(variant):
     shutil.rmtree(d, ignore_errors=True)  # a variant needs a fresh boot: start over
     os.makedirs(d)
     with open(os.path.join(d, "runs.jsonl"), "w") as f:
-        for i, phase in enumerate(["before"] * n + ["guest"] + ["after"] * n, 1):
-            rec = disturb(variant, i) if phase == "guest" else runc_step(variant, i, phase)
+        phases = ["before"] * n + ["guest"] + ["after"] * n
+        if variant in ROLLOVER:
+            phases += ["rollover"] + ["after_rollover"] * n
+        for i, phase in enumerate(phases, 1):
+            if phase in ("guest", "rollover"):
+                rec = disturb(variant, i, phase)
+            else:
+                rec = runc_step(variant, i, phase)
             f.write(json.dumps(rec) + "\n")
             f.flush()
             rb.bump_progress()
-            if phase == "guest":
-                rb.log("step %2d %-11s %s" % (i, variant, {k: rec.get(k) for k in ("max_us", "qemu_s", "qemu_rc")}))
+            if phase in ("guest", "rollover"):
+                rb.log("step %2d %-11s %s" % (i, phase, {k: rec.get(k) for k in (
+                    "max_us", "qemu_s", "qemu_rc", "guests", "all_rc_0", "rollover_s") if k in rec}))
             else:
                 rb.log("step %2d runc %-6s max %4s avg %3s >60us %5d  CPU3 irq/s %s" % (
                     i, phase, rec["max_us"], rec["avg_us"], rec["samples_over_60us"], rec["cpu3_irq_total_per_s"]))

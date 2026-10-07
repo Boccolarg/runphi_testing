@@ -304,9 +304,7 @@ campaign's table:
   - **It is not KVM entering a guest.** The tiny guest goes through KVM's
     whole first run (VMID, timer, vGIC, a world switch, PSCI) and leaves
     nothing behind. Something the guest's Linux does while it runs causes
-    the change: its MMU and caches, its own TLB maintenance (broadcast,
-    with the guest's VMID), its use of memory, the vGIC and the timer, or
-    simply running for 40 s.
+    the change; the next probes find what.
   - **CPU 3 does the same work, only more slowly.** After a Linux guest, CPU
     3 retires the same instructions and takes the same exceptions, with
     about the same TLB and cache refills, but needs 75–90% more cycles
@@ -316,10 +314,55 @@ campaign's table:
     which become slower to complete. CPUs 0–2 also retire 4–8% fewer
     instructions after a Linux guest.
 
-  The exact mechanism, in KVM or in the Cortex-A53 and its interconnect,
-  is not identified. For runPHI-KVM, this is interference that outlives the
-  guest: once a KVM container has run, a plain container on the isolated
-  CPU loses latency under TLB-heavy load, until the next reboot.
+  **The cause: the dead guest's TLB entries.** The tiny guest's other
+  modes (`bench/tiny_guest.S`, all on CPU 3, each on its own fresh boot)
+  find the trigger, and two last probes find what removes it:
+
+  | Between the runc runs | runc max, before → after | Samples > 60 µs | CPU 3 CPI |
+  |---|---|---|---|
+  | spin 40 s, MMU off (`qemu_tiny_spin`) | 60–67 → 55–73 µs | 0–1 → 0–94 | 5.5 → 5.6 |
+  | write every page of its 1 GB, MMU off (`qemu_tiny_touch`) | 57–72 → 59–70 µs | 0–12 → 0–22 | 5.3 → 5.4 |
+  | one `TLBI VMALLE1`, MMU off, spin 40 s (`qemu_tiny_tlbi_only`) | 56–95 → 61–82 µs | 0–3 → 1–12 | 5.3 → 5.7 |
+  | **MMU and caches on**, spin 40 s (`qemu_tiny_mmu_spin`) | 57–71 → 129–191 µs | 0–50 → 544–627 | 5.5 → 9.7 |
+  | the same without the `TLBI` before it (`qemu_tiny_mmu_noflush`) | 57–88 → 167–205 µs | 0–16 → 493–529 | 5.7 → 9.4 |
+  | **MMU on, caches off** (`qemu_tiny_mmu_nocache`) | 59–101 → 157–181 µs | 0–28 → 491–591 | 5.6 → 9.6 |
+  | MMU on, 40 s of `TLBI VAE1IS` (`qemu_tiny_mmu_tlbi`) | 56–74 → 134–168 µs | 0–8 → 337–718 | 5.4 → 9.7 |
+  | Linux guest, then **300 tiny guests** (`rollover`) | 59–92 → 107–154 → **60–77 µs** | 0–23 → 236–663 → **0–12** | 5.4 → 9.5 → **5.3** |
+  | Linux guest, then 100 tiny guests (`few_guests`) | 50–63 → 171–187 → 184–192 µs | 0–2 → 481–509 → 496–647 | 5.4 → 9.4 → 9.6 |
+
+  - **The trigger is a guest turning its MMU on**, so that the core
+    translates its accesses in two stages: the guest's own page tables,
+    then KVM's stage 2. Caches do not matter (M alone is enough), and
+    neither does the guest's own TLB maintenance. Running 40 s, having KVM
+    map all of the guest's memory, or a broadcast `TLBI` with the guest's
+    VMID do nothing without it.
+  - **A full TLB flush removes it.** KVM does not invalidate a VM's TLB
+    entries when it destroys the VM: `kvm_free_stage2_pgd()` frees the
+    stage-2 tables without any `TLBI`, in this kernel (6.1.70) and still in
+    6.17. A dead VM's VMID is simply not reused until the 8-bit VMIDs of
+    the Cortex-A53 run out. Then `flush_context()` in
+    `arch/arm64/kvm/vmid.c` invalidates all TLB entries of all VMIDs on
+    all cores (`__kvm_flush_vm_context`). 300 tiny guests force that
+    rollover, and runc is back to normal (CPI 5.3). 100 tiny guests do
+    not force it, and nothing changes. Running other guests does not evict
+    the entries either.
+
+  So the translations a guest builds once its MMU is on stay in the
+  cores' TLBs after the guest is gone, tagged with its dead VMID. The host
+  never uses two-stage translation, so nothing it does evicts them. While
+  they are there, every TLB invalidation that CPUs 0–2 broadcast costs CPU
+  3 many more stall cycles: same instructions, CPI 5.5 → 9.7. This happens
+  even when the guest ran on CPU 2 (`qemu_cpu2`). Why such entries make
+  invalidations more expensive is inside the Cortex-A53 and not
+  documented.
+
+  For runPHI-KVM this is interference that outlives the guest. Once any
+  KVM container has run, a plain container on the isolated CPU loses
+  latency under TLB-heavy load until the next VMID rollover, which may
+  never come, or the next reboot. In measurements, runc must not run after
+  a runPHI guest in the same boot, as the first campaign arranged. A fix
+  belongs in KVM: invalidate a VM's VMID (`__kvm_tlb_flush_vmid`) when its
+  stage 2 is freed.
 
 Still open, for the students:
 
@@ -561,7 +604,7 @@ bench/emulatorpin_check.sh  on-board check of runPHI's emulator pinning
 bench/m4.py      the students' own procedure (M4_SCRIPTS), campaigns m4_* -> results_m4/
 bench/queue.m4, bench/validate_m4.sh  its queue (their order) and quick validation
 bench/order_probe.py  runc under tlb_shootdown before and after a guest (M4 procedure), variants probe_*
-bench/pmucount.c, bench/tiny_guest.S  its PMU counter reader and its smallest guest (-> /root/rtbench/bin)
+bench/pmucount.c, bench/tiny_guest.S  its PMU counter reader and its smallest guests, MODE 0-7 (-> /root/rtbench/bin)
 images/runc/Dockerfile.m4, images/kvm/S99m4  its images: rt-cyclictest:runc, rt-cyclictest:runphi
 watchdog/rtbench_watchdog.sh   on the server: power-cycles a hung board, fetches the results
 ```
