@@ -239,7 +239,8 @@ campaign's table:
   reaches it instead of 30 s later, and it runs with `-h 1000`. Which of the
   two matters was not measured.
 - **runc under `tlb_shootdown` is worse because of the alternating order.**
-  Its mean maximum is 168 µs, against 60 µs in the first campaign. The
+  Its mean maximum is 168 µs, against 60 µs in the first campaign (67.9 µs
+  on a kernel with the KVM fix found below, see **The fix**). The
   first runc run of the boot, before any runPHI guest, reached 66 µs. Each
   of runs 2–30 came after a runPHI guest in the same boot, and they reached
   115–234 µs, with about 500 samples above 60 µs each.
@@ -347,22 +348,68 @@ campaign's table:
     not force it, and nothing changes. Running other guests does not evict
     the entries either.
 
-  So the translations a guest builds once its MMU is on stay in the
-  cores' TLBs after the guest is gone, tagged with its dead VMID. The host
-  never uses two-stage translation, so nothing it does evicts them. While
-  they are there, every TLB invalidation that CPUs 0–2 broadcast costs CPU
-  3 many more stall cycles: same instructions, CPI 5.5 → 9.7. This happens
-  even when the guest ran on CPU 2 (`qemu_cpu2`). Why such entries make
-  invalidations more expensive is inside the Cortex-A53 and not
-  documented.
+  So once a guest has run with its MMU on, the cores keep something in
+  their TLBs after the guest is gone. The host never uses two-stage
+  translation, so nothing it does evicts it. While it is there, every TLB
+  invalidation that CPUs 0–2 broadcast costs CPU 3 many more stall cycles:
+  same instructions, CPI 5.5 → 9.7. This happens even when the guest ran
+  on CPU 2 (`qemu_cpu2`). Why it makes invalidations more expensive is
+  inside the Cortex-A53 and not documented.
 
-  For runPHI-KVM this is interference that outlives the guest. Once any
-  KVM container has run, a plain container on the isolated CPU loses
-  latency under TLB-heavy load until the next VMID rollover, which may
-  never come, or the next reboot. In measurements, runc must not run after
-  a runPHI guest in the same boot, as the first campaign arranged. A fix
-  belongs in KVM: invalidate a VM's VMID (`__kvm_tlb_flush_vmid`) when its
-  stage 2 is freed.
+  For runPHI-KVM this is interference that outlives the guest. On a stock
+  kernel, once any KVM container has run, a plain container on the
+  isolated CPU loses latency under TLB-heavy load until the next VMID
+  rollover, which may never come, or the next reboot. In measurements on a
+  stock kernel, runc must not run after a runPHI guest in the same boot,
+  as the first campaign arranged.
+
+  **The fix.** It is a KVM change: when a VM that has run is torn down, do
+  what the VMID rollover does. That is the environment_builder patch
+  `environment/kria/kvm/custom_build/linux/patch/kvm_stage2_free_flush/`,
+  which calls `kvm_call_hyp(__kvm_flush_vm_context)` (`TLBI ALLE1IS`) in
+  `kvm_free_stage2_pgd()`. Finding it took 13 probes on experimental
+  kernels (`kernel/`, `order_probe.py` variants `flush*` and `specat*`),
+  because no narrower invalidation helps:
+
+  | Invalidation when the VM is torn down | runc max after the guest | CPU 3 CPI |
+  |---|---|---|
+  | none (stock kernel) | 163–178 µs | 9.3 |
+  | the dead VM's VMID, stage 1 and 2 (`TLBI VMALLS12E1IS`): the first attempt | 121–185 µs (also after a runPHI guest: 167–184) | 9.9 |
+  | the host's stage 1 (`TLBI VMALLE1IS`, VMID 0) | 143–194 µs | 9.7 |
+  | VMID 0, stage 1 and 2 | 161–194 µs | 9.5 |
+  | the dead VM's VMID and VMID 0, stage 1 and 2 | 158–187 µs | 9.4 |
+  | the dead VM's VMID and the host's stage 1 | 163–202 µs | 10.0 |
+  | none, with KVM's `ARM64_WORKAROUND_SPECULATIVE_AT` forced on for the A53 | 175–190 µs | 9.9 |
+  | the dead VM's VMID, with that workaround | 165–190 µs | 9.5 |
+  | **all VMIDs (`TLBI ALLE1IS`)** | **60–79 µs** (runPHI guest: 58–72) | **5.7** |
+
+  So it is neither entries tagged with the guest's VMID nor host entries
+  (VMID 0). It is also not a by-product of the speculative walks in KVM's
+  world switch, which the forced workaround suppresses. Only the
+  invalidation of everything removes it. It costs one TLB refill on every
+  CPU per VM teardown.
+
+  Verified on the kernel the environment now builds (patch applied, Image
+  `f586b001`), each on a fresh boot:
+
+  | | runc max, before → after the guest | Samples > 60 µs |
+  |---|---|---|
+  | plain QEMU guest (`qemu_cpu3`) | 62–79 → 57–79 µs | 1–21 → 0–23 |
+  | runPHI guest (`runphi`) | 59–82 → 68–87 µs | 0–4 → 4–28 |
+
+  The students' `tlb_shootdown` campaign (`m4_tlb_shootdown`, runc and
+  runPHI alternating, 30 iterations) again, on the fixed kernel:
+
+  | | runc max mean / worst | runPHI-KVM max mean / worst |
+  |---|---|---|
+  | stock kernel (second campaign) | 168.1 / 234 µs | 343.1 / 383 µs |
+  | **fixed kernel** | **67.9 / 83 µs** | 361.3 / 441 µs |
+  | first campaign (runc in its own boots) | 59.8 / 77 µs | 354.0 / 445 µs |
+
+  runc is back to about its own-boot level. runPHI-KVM is unchanged,
+  within the variation between campaigns: the flush happens only after a
+  guest is gone. Data: `data/run-2026-10-07-fix/` (the experiments) and
+  `data/run-2026-10-07-final/` (the verification).
 
 Still open, for the students:
 
@@ -605,6 +652,7 @@ bench/m4.py      the students' own procedure (M4_SCRIPTS), campaigns m4_* -> res
 bench/queue.m4, bench/validate_m4.sh  its queue (their order) and quick validation
 bench/order_probe.py  runc under tlb_shootdown before and after a guest (M4 procedure), variants probe_*
 bench/pmucount.c, bench/tiny_guest.S  its PMU counter reader and its smallest guests, MODE 0-7 (-> /root/rtbench/bin)
+kernel/          the KVM patches of the TLB experiment (the fix itself is in environment_builder)
 images/runc/Dockerfile.m4, images/kvm/S99m4  its images: rt-cyclictest:runc, rt-cyclictest:runphi
 watchdog/rtbench_watchdog.sh   on the server: power-cycles a hung board, fetches the results
 ```

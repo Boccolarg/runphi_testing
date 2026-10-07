@@ -1,0 +1,102 @@
+From: Boccolarg <uranusthebest@gmail.com>
+Subject: [PATCH] EXPERIMENT KVM: arm64: more flush modes, speculative-AT workaround on A53
+
+Not for the environment's patch series, on top of 0001. stage2_free_flush
+gains 4 (VMID 0, stage 1 and 2), 5 (the VM's VMID and 4) and 6 (the VM's
+VMID and the host's stage-1 entries). The boot parameter "a53_specat" gives
+the Cortex-A53 the ARM64_WORKAROUND_SPECULATIVE_AT workaround (errata
+1165522/1319367/1530923 on other cores), which keeps EL1 stage-1 walks
+disabled during KVM's world switch while the guest's EL1 registers and the
+stage-2 configuration disagree: does the slowdown then never appear?
+
+--- a/arch/arm64/kernel/cpu_errata.c
++++ b/arch/arm64/kernel/cpu_errata.c
+@@ -376,6 +376,31 @@
+ };
+ #endif
+ 
++#ifdef CONFIG_ARM64_WORKAROUND_SPECULATIVE_AT
++/*
++ * EXPERIMENT (not for upstream): with "a53_specat" on the command line,
++ * the Cortex-A53 also gets the speculative-AT workaround, under which
++ * KVM's nVHE world switch keeps EL1 stage-1 walks disabled (TCR_EL1.EPDx)
++ * while the EL1 registers and VTTBR/HCR_EL2.VM disagree.
++ */
++static bool a53_specat;
++
++static int __init parse_a53_specat(char *arg)
++{
++	a53_specat = true;
++	return 0;
++}
++early_param("a53_specat", parse_a53_specat);
++
++static bool needs_speculative_at(const struct arm64_cpu_capabilities *entry, int scope)
++{
++	static const struct midr_range a53 = MIDR_ALL_VERSIONS(MIDR_CORTEX_A53);
++
++	return is_affected_midr_range_list(entry, scope) ||
++	       (a53_specat && is_midr_in_range(read_cpuid_id(), &a53));
++}
++#endif
++
+ #ifdef CONFIG_ARM64_ERRATUM_1463225
+ static const struct midr_range erratum_1463225[] = {
+ 	/* Cortex-A76 r0p0 - r3p1 */
+@@ -580,7 +605,9 @@
+ 	{
+ 		.desc = "ARM errata 1165522, 1319367, or 1530923",
+ 		.capability = ARM64_WORKAROUND_SPECULATIVE_AT,
+-		ERRATA_MIDR_RANGE_LIST(erratum_speculative_at_list),
++		.type = ARM64_CPUCAP_LOCAL_CPU_ERRATUM,
++		.matches = needs_speculative_at,
++		.midr_range_list = erratum_speculative_at_list,
+ 	},
+ #endif
+ #ifdef CONFIG_ARM64_ERRATUM_1463225
+--- a/arch/arm64/kvm/mmu.c
++++ b/arch/arm64/kvm/mmu.c
+@@ -812,7 +812,8 @@
+  * freed, switchable at run time, to find which TLB entries a dead guest
+  * leaves behind. 0: nothing (as upstream); 1: the VM's VMID (TLBI
+  * VMALLS12E1IS); 2: all VMIDs (TLBI ALLE1IS, as a VMID rollover); 3: the
+- * host's own stage-1 entries (TLBI VMALLE1IS with VMID 0).
++ * host's own stage-1 entries (TLBI VMALLE1IS with VMID 0); 4: VMID 0,
++ * stage 1 and 2 (TLBI VMALLS12E1IS with VMID 0); 5: 1 and 4; 6: 1 and 3.
+  * /sys/module/kvm/parameters/stage2_free_flush{,es}
+  */
+ static unsigned int stage2_free_flush = 1;
+@@ -820,6 +821,15 @@
+ static unsigned int stage2_free_flushes;
+ module_param(stage2_free_flushes, uint, 0444);
+ 
++static void stage2_free_flush_vmid0(struct kvm_s2_mmu *mmu)
++{
++	u64 id = atomic64_read(&mmu->vmid.id);
++
++	atomic64_set(&mmu->vmid.id, 0);		/* the host's VMID */
++	kvm_call_hyp(__kvm_tlb_flush_vmid, mmu);
++	atomic64_set(&mmu->vmid.id, id);
++}
++
+ void kvm_free_stage2_pgd(struct kvm_s2_mmu *mmu)
+ {
+ 	struct kvm *kvm = kvm_s2_mmu_to_kvm(mmu);
+@@ -847,6 +857,17 @@
+ 			case 3:
+ 				flush_tlb_all();
+ 				break;
++			case 4:
++				stage2_free_flush_vmid0(mmu);
++				break;
++			case 5:
++				kvm_call_hyp(__kvm_tlb_flush_vmid, mmu);
++				stage2_free_flush_vmid0(mmu);
++				break;
++			case 6:
++				kvm_call_hyp(__kvm_tlb_flush_vmid, mmu);
++				flush_tlb_all();
++				break;
+ 			}
+ 			WRITE_ONCE(stage2_free_flushes, stage2_free_flushes + 1);
+ 		}

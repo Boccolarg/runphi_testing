@@ -31,6 +31,19 @@ again. The variants differ in what runs in between:
                more runc runs: does the slowdown survive that flush?
   few_guests   the same with 100 tiny guests, too few for a VMID rollover
                (control: is it the flush, or just running other guests?)
+  flush0..flush6
+               qemu_cpu3 on a kernel with the experimental KVM patches
+               (environment_builder kvm_vmid_flush_experiment): before the
+               guest, /sys/module/kvm/parameters/stage2_free_flush selects
+               what KVM invalidates when the guest's stage 2 is freed (0
+               nothing, 1 its VMID, 2 all VMIDs, 3 the host's stage-1
+               entries, 4 VMID 0 stage 1 and 2, 5 = 1 + 4, 6 = 1 + 3);
+               stage2_free_flushes shows that it did
+  flush2_runphi
+               the same with mode 2 and a runPHI guest
+  specat, specat1
+               qemu_cpu3 with mode 0 (1) on a kernel booted with
+               "a53_specat": KVM's speculative-AT workaround on the A53
   none         nothing (control)
 
 Each runc run also records the interrupts CPU 3 took, per source
@@ -67,6 +80,11 @@ PMUCOUNT = os.path.join(rb.ROOT, "bin", "pmucount")  # bench/pmucount.c
 VARIANTS = ("runphi_tlb", "runphi", "qemu_cpu3", "qemu_cpu2", "qemu_paused", "qemu_nopmu",
             "rollover", "few_guests", "none") + tuple(TINY)
 ROLLOVER = {"rollover": 300, "few_guests": 100}  # tiny guests after the Linux one
+FLUSH = {"flush%d" % m: m for m in range(7)}
+FLUSH.update(flush2_runphi=2, specat=0, specat1=1)
+VARIANTS += tuple(FLUSH)
+SPECAT_DESC = "ARM errata 1165522, 1319367, or 1530923"  # the capability's dmesg line
+KVM_PARAMS = "/sys/module/kvm/parameters"
 
 
 def cpu3_interrupts():
@@ -199,6 +217,25 @@ def disturb(variant, step, phase="guest"):
         rec = {}
     elif variant in ROLLOVER:
         rec = qemu_guest(int(rb.ISO_CPU), rundir)
+    elif variant in FLUSH:
+        mode, count = os.path.join(KVM_PARAMS, "stage2_free_flush"), os.path.join(KVM_PARAMS, "stage2_free_flushes")
+        if not os.path.exists(mode):
+            raise rb.RunError("this kernel has no stage2_free_flush (kvm_vmid_flush_experiment)")
+        specat = SPECAT_DESC in subprocess.run(["dmesg"], stdout=subprocess.PIPE,
+                                               universal_newlines=True).stdout
+        want = variant.startswith("specat")
+        if want != specat or want != ("a53_specat" in rb.read_text("/proc/cmdline")):
+            raise rb.RunError("speculative-AT workaround %s, a53_specat %s on the command line: wrong boot for %s" % (
+                specat, "a53_specat" in rb.read_text("/proc/cmdline"), variant))
+        with open(mode, "w") as f:
+            f.write("%d\n" % FLUSH[variant])
+        before = int(rb.read_text(count))
+        if variant.endswith("_runphi"):
+            rec = m4.ffi_run("kvm", "baseline", step, rundir, False)
+        else:
+            rec = qemu_guest(int(rb.ISO_CPU), rundir)
+        rec.update(flush_mode=int(rb.read_text(mode)), flushes=int(rb.read_text(count)) - before,
+                   speculative_at=specat)
     else:
         rec = qemu_guest(2 if variant == "qemu_cpu2" else int(rb.ISO_CPU), rundir,
                          paused=variant == "qemu_paused", pmu=variant != "qemu_nopmu",
@@ -233,7 +270,8 @@ def campaign(variant):
             rb.bump_progress()
             if phase in ("guest", "rollover"):
                 rb.log("step %2d %-11s %s" % (i, phase, {k: rec.get(k) for k in (
-                    "max_us", "qemu_s", "qemu_rc", "guests", "all_rc_0", "rollover_s") if k in rec}))
+                    "max_us", "qemu_s", "qemu_rc", "guests", "all_rc_0", "rollover_s", "flush_mode",
+                    "flushes", "speculative_at") if k in rec}))
             else:
                 rb.log("step %2d runc %-6s max %4s avg %3s >60us %5d  CPU3 irq/s %s" % (
                     i, phase, rec["max_us"], rec["avg_us"], rec["samples_over_60us"], rec["cpu3_irq_total_per_s"]))

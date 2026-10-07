@@ -1,0 +1,63 @@
+From: Boccolarg <uranusthebest@gmail.com>
+Subject: [PATCH] EXPERIMENT KVM: arm64: choose the TLB flush at stage-2 free at run time
+
+Not for the environment's patch series: applied by hand on top of
+kvm_vmid_flush/0001 to find which TLB entries a dead guest leaves behind on
+the Cortex-A53 (see runphi_testing/runphi-kvm-rt-kria, bench/order_probe.py
+variants fix_*). /sys/module/kvm/parameters/stage2_free_flush selects what
+kvm_free_stage2_pgd() invalidates (0 nothing, 1 the VM's VMID, 2 all VMIDs,
+3 the host's stage-1 entries); stage2_free_flushes counts the VMs flushed.
+
+--- a/arch/arm64/kvm/mmu.c
++++ b/arch/arm64/kvm/mmu.c
+@@ -19,6 +19,7 @@
+ #include <asm/kvm_asm.h>
+ #include <asm/kvm_emulate.h>
+ #include <asm/virt.h>
++#include <asm/tlbflush.h>
+ 
+ #include "trace.h"
+ 
+@@ -806,6 +807,19 @@
+ 	srcu_read_unlock(&kvm->srcu, idx);
+ }
+ 
++/*
++ * EXPERIMENT (not for upstream): what to invalidate when a VM's stage 2 is
++ * freed, switchable at run time, to find which TLB entries a dead guest
++ * leaves behind. 0: nothing (as upstream); 1: the VM's VMID (TLBI
++ * VMALLS12E1IS); 2: all VMIDs (TLBI ALLE1IS, as a VMID rollover); 3: the
++ * host's own stage-1 entries (TLBI VMALLE1IS with VMID 0).
++ * /sys/module/kvm/parameters/stage2_free_flush{,es}
++ */
++static unsigned int stage2_free_flush = 1;
++module_param(stage2_free_flush, uint, 0644);
++static unsigned int stage2_free_flushes;
++module_param(stage2_free_flushes, uint, 0444);
++
+ void kvm_free_stage2_pgd(struct kvm_s2_mmu *mmu)
+ {
+ 	struct kvm *kvm = kvm_s2_mmu_to_kvm(mmu);
+@@ -822,8 +836,20 @@
+ 		 * long as they stay, so drop them now. A VM that never ran
+ 		 * has no VMID yet (0).
+ 		 */
+-		if (atomic64_read(&mmu->vmid.id))
+-			kvm_call_hyp(__kvm_tlb_flush_vmid, mmu);
++		if (atomic64_read(&mmu->vmid.id)) {
++			switch (READ_ONCE(stage2_free_flush)) {
++			case 1:
++				kvm_call_hyp(__kvm_tlb_flush_vmid, mmu);
++				break;
++			case 2:
++				kvm_call_hyp(__kvm_flush_vm_context);
++				break;
++			case 3:
++				flush_tlb_all();
++				break;
++			}
++			WRITE_ONCE(stage2_free_flushes, stage2_free_flushes + 1);
++		}
+ 		mmu->pgd_phys = 0;
+ 		mmu->pgt = NULL;
+ 		free_percpu(mmu->last_vcpu_ran);

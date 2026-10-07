@@ -1,0 +1,37 @@
+From: Boccolarg <uranusthebest@gmail.com>
+Subject: [PATCH] KVM: arm64: flush a VM's VMID when its stage 2 is freed
+
+kvm_free_stage2_pgd() frees a VM's stage-2 page tables without any TLB
+invalidation: a dead VM's VMID is not reused before the next VMID rollover,
+whose flush_context() invalidates all VMIDs on all CPUs, so its TLB entries
+are harmless for correctness. They are not harmless for latency. On the
+Kria KV260 (Cortex-A53, 8-bit VMIDs, nVHE), once a guest has run with its
+stage-1 MMU on, the TLB entries it leaves behind make every broadcast TLB
+invalidation issued by the host slower: under stress-ng --tlb-shootdown on
+CPUs 0-2, the cyclictest maximum of a runc container on the isolated CPU 3
+goes from about 60 us to 130-200 us and stays there until a VMID rollover
+or a reboot (CPI on CPU 3 from 5.5 to 9.7, same instructions).
+See runphi_testing/runphi-kvm-rt-kria (README, bench/order_probe.py).
+
+Invalidate the VM's VMID (TLBI VMALLS12E1IS) when its stage 2 is freed.
+A VM that never ran has no VMID yet (0) and is skipped.
+
+--- a/arch/arm64/kvm/mmu.c
++++ b/arch/arm64/kvm/mmu.c
+@@ -814,6 +814,16 @@
+ 	write_lock(&kvm->mmu_lock);
+ 	pgt = mmu->pgt;
+ 	if (pgt) {
++		/*
++		 * The VMID is not reused before the next rollover, which
++		 * flushes all VMIDs, so the TLBs could hold this VM's entries
++		 * until then. On Cortex-A53, such stale stage 1+2 entries make
++		 * the host's broadcast TLB invalidations much slower for as
++		 * long as they stay, so drop them now. A VM that never ran
++		 * has no VMID yet (0).
++		 */
++		if (atomic64_read(&mmu->vmid.id))
++			kvm_call_hyp(__kvm_tlb_flush_vmid, mmu);
+ 		mmu->pgd_phys = 0;
+ 		mmu->pgt = NULL;
+ 		free_percpu(mmu->last_vcpu_ran);
